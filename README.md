@@ -1,12 +1,16 @@
 # wsteg: audio steganography workbench
 
+[![ci](https://github.com/yusuftas/wsteg/actions/workflows/ci.yml/badge.svg)](https://github.com/yusuftas/wsteg/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/yusuftas/wsteg)](https://github.com/yusuftas/wsteg/releases/latest)
+[![license](https://img.shields.io/github/license/yusuftas/wsteg)](LICENSE)
+
 A cross-platform desktop app (Windows + Linux) for WAV/audio stego CTF challenges,
 built with Qt (PySide6) and pyqtgraph. It reads the **exact stored sample bits**,
 never resampled or converted to float, so bit-level work is exact.
 
 ## Run it
 
-**Prebuilt (no Python needed):** download from the GitHub **Releases** page, unpack `wsteg-<ver>-windows-x86_64.zip` or
+**Prebuilt (no Python needed):** download from the [Releases page](https://github.com/yusuftas/wsteg/releases), unpack `wsteg-<ver>-windows-x86_64.zip` or
 `wsteg-<ver>-linux-x86_64.tar.gz` and run `wsteg-gui` (`wsteg-gui.exe` on Windows).
 The same folder also has a console `wsteg` CLI.
 
