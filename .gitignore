@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.bin
+build/
+dist/
+.venv*/
+packaging/linux-libs/
+samples/*.wav

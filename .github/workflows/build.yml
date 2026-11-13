@@ -1,0 +1,45 @@
+# Reusable: build the standalone app on Windows + Linux, smoke-test it, upload archives.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        type: number
+        default: 14
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04          # older glibc => binary runs on more distros
+            name: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Qt system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # libxcb-cursor0 gets bundled into the build by packaging/wsteg.spec
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libpulse0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements.txt pyinstaller
+      - run: python scripts/build.py
+      - run: python scripts/smoke_binary.py dist/${{ matrix.name }}/wsteg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wsteg-${{ matrix.name }}
+          path: |
+            dist/${{ matrix.name }}/*.zip
+            dist/${{ matrix.name }}/*.tar.gz
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
