@@ -6,6 +6,8 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-13
+
 First public release: a desktop workbench for WAV/audio steganography CTF challenges.
 
 ### Added
