@@ -1,24 +1,27 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Bit-plane analysis tab: per-bit stats, distribution heatmap, bit viewer, bit-plane image."""
+"""Bit-plane analysis tab: per-bit stats, distribution heatmap, bit viewer, bit-plane image,
+shown one view at a time."""
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QPushButton,
-    QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import analysis
 from ..extract import select, selected_index
-from .common import T, bits_cmap, diverging_cmap, hint, labeled, panel, row, show_tip
+from .common import T, bits_cmap, diverging_cmap, hint, labeled, panel, row, seg_buttons, show_tip
 from .selection import SelectionBar
 
 
@@ -38,6 +41,8 @@ def _bit_window(audio, sel, offset, count):
 def _bit_plane(audio, sel, bit, width, max_samples):
     s = select(audio, sel)[:max_samples]
     plane = ((s >> s.dtype.type(bit)) & s.dtype.type(1)).astype(np.uint8)
+    if not width:  # square: the smallest width whose rows hold every sample
+        width = max(1, math.isqrt(max(len(plane) - 1, 0)) + 1)
     rows = -(-len(plane) // width) if len(plane) else 1
     img = np.zeros(rows * width, np.uint8)
     img[:len(plane)] = plane
@@ -51,43 +56,70 @@ def _stats(audio, sel, chunks):
     return st
 
 
+VIEWS = [("stats", "Bit statistics"), ("heat", "Distribution heatmap"),
+         ("viewer", "Bit viewer"), ("image", "Bit plane image")]
+# which computed data each view shows
+VIEW_DATA = {"stats": "stats", "heat": "stats", "viewer": "window", "image": "plane"}
+
+
+class _PopOut(QWidget):
+    """Separate window holding one view; closing it docks the view back into the tab."""
+    closed = Signal()
+
+    def __init__(self, title, parent):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle(title)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+
+    def closeEvent(self, ev):
+        self.closed.emit()
+        super().closeEvent(ev)
+
+
 class BitPlanesTab(QWidget):
+    """One view at a time, picked from the switcher; any view can be popped out into
+    its own window. A view's data is only computed while that view is on screen."""
+
     def __init__(self, runner, sel_model, parent=None):
         super().__init__(parent)
         self.runner = runner
         self.m = sel_model
         self.audio = None
-        self.dirty = False
+        self.dirty = set()
         self.stats = None
         self.win = None
         self.plane = None
         self.highlight = [0]
         self.offset = 0
+        self.view = "stats"
+        self.pages, self.slots, self.windows = {}, {}, {}
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 0)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
         outer.addWidget(SelectionBar(sel_model))
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        outer.addWidget(scroll, 1)
-        body = QWidget()
-        scroll.setWidget(body)
-        lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 8, 0, 12)
-        lay.setSpacing(12)
+        switch, self.view_btns = seg_buttons(VIEWS, self.view, self.show_view)
+        self.pop_btn = QPushButton("Pop out")
+        self.pop_btn.setToolTip("Open this view in its own window, so it can sit next to another view or tab")
+        self.pop_btn.clicked.connect(lambda: self.pop_out(self.view))
+        outer.addLayout(row(labeled("View", switch), None, self.pop_btn, stretch=False))
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, 1)
 
         # --- per-bit bars
-        bars = QHBoxLayout()
+        page = QWidget()
+        bars = QHBoxLayout(page)
+        bars.setContentsMargins(0, 0, 0, 0)
         bars.setSpacing(12)
         self.ones_plot, p = self._bar_panel("Ones ratio per bit", "≈50% suggests noise or payload")
         bars.addWidget(p)
         self.trans_plot, p = self._bar_panel("Transition rate per bit", "bit differs from previous sample")
         bars.addWidget(p)
-        lay.addLayout(bars)
+        self._add_view("stats", page)
 
         # --- heatmap
-        p, pl = panel("Bit distribution across samples", "ones ratio per chunk · click a cell to inspect it below")
+        p, pl = panel("Bit distribution across samples", "ones ratio per chunk · click a cell to open it in the bit viewer")
         self.range = QComboBox()
         for v, l in ((0.5, "0–100%"), (0.2, "50 ± 20%"), (0.05, "50 ± 5%"), (0.01, "50 ± 1%")):
             self.range.addItem(l, v)
@@ -99,7 +131,7 @@ class BitPlanesTab(QWidget):
         self.chunks.setCurrentText("256")
         pl.addLayout(row(labeled("Color range", self.range), labeled("Chunks", self.chunks)))
         self.heat_w = pg.PlotWidget()
-        self.heat_w.setMinimumHeight(320)
+        self.heat_w.setMinimumHeight(200)
         self.heat_img = pg.ImageItem()
         self.heat_w.addItem(self.heat_img)
         self.heat_w.setMouseEnabled(x=True, y=False)
@@ -108,8 +140,8 @@ class BitPlanesTab(QWidget):
         self.heat_bar = pg.ColorBarItem(values=(0.3, 0.7), colorMap=diverging_cmap(), interactive=False,
                                         label="ones ratio", width=14)
         self.heat_bar.setImageItem(self.heat_img, insert_in=self.heat_w.getPlotItem())
-        pl.addWidget(self.heat_w)
-        lay.addWidget(p)
+        pl.addWidget(self.heat_w, 1)
+        self._add_view("heat", p)
 
         # --- bit viewer
         p, pl = panel("Bit viewer", "raw stored bits of consecutive selected samples · highlighted rows = bits chosen in Extract")
@@ -126,7 +158,7 @@ class BitPlanesTab(QWidget):
         pl.addLayout(row(self.prev_btn, labeled("Offset", self.off_spin), self.next_btn,
                          labeled("Samples", self.count), self.win_info))
         self.win_w = pg.PlotWidget()
-        self.win_w.setMinimumHeight(300)
+        self.win_w.setMinimumHeight(200)
         self.win_img = pg.ImageItem()
         self.win_img.setLookupTable(bits_cmap().getLookupTable(nPts=2))
         self.win_w.addItem(self.win_img)
@@ -134,15 +166,18 @@ class BitPlanesTab(QWidget):
         self.win_w.setLabel("left", "bit")
         self.win_w.setLabel("bottom", "selected sample index")
         self.hl_items = []
-        pl.addWidget(self.win_w)
-        lay.addWidget(p)
+        pl.addWidget(self.win_w, 1)
+        self._add_view("viewer", p)
 
         # --- bit plane image
         p, pl = panel("Bit plane image", "one bit of each selected sample wrapped into rows — hidden images / QR codes show up here")
         self.bi_bit = QComboBox()
         self.bi_width = QSpinBox()
-        self.bi_width.setRange(1, 65536)
-        self.bi_width.setValue(256)
+        self.bi_width.setRange(0, 65536)
+        self.bi_width.setSpecialValueText("square")
+        self.bi_width.setValue(0)
+        self.bi_width.setMinimumWidth(80)
+        self.bi_width.setToolTip("Row width in samples. 0 / 'square' picks the width that makes the image square")
         self.bi_max = QComboBox()
         for v, l in ((1 << 18, "256K"), (1 << 20, "1M"), (1 << 22, "4M"), (1 << 24, "16M")):
             self.bi_max.addItem(l, v)
@@ -152,14 +187,14 @@ class BitPlanesTab(QWidget):
         pl.addLayout(row(labeled("Bit", self.bi_bit), labeled("Width", self.bi_width),
                          labeled("Max samples", self.bi_max), self.bi_save, self.bi_info))
         self.bi_glw = pg.GraphicsLayoutWidget()
-        self.bi_glw.setMinimumHeight(480)
+        self.bi_glw.setMinimumHeight(200)
         self.bi_vb = self.bi_glw.addViewBox(lockAspect=True, invertY=True)
         self.bi_img = pg.ImageItem()
         self.bi_img.setLookupTable(bits_cmap().getLookupTable(nPts=2))
         self.bi_vb.addItem(self.bi_img)
-        pl.addWidget(self.bi_glw)
+        pl.addWidget(self.bi_glw, 1)
         pl.addWidget(hint("wheel to zoom, drag to pan, right-click → View All"))
-        lay.addWidget(p)
+        self._add_view("image", p)
 
         # --- wiring
         self.m.changed.connect(self._sel_changed)
@@ -181,7 +216,7 @@ class BitPlanesTab(QWidget):
     def _bar_panel(self, title, sub):
         p, pl = panel(title, sub)
         w = pg.PlotWidget()
-        w.setFixedHeight(240)
+        w.setMinimumHeight(200)
         w.setMouseEnabled(x=False, y=False)
         w.hideButtons()
         w.setYRange(0, 1, padding=0.02)
@@ -190,8 +225,65 @@ class BitPlanesTab(QWidget):
         w.setLabel("bottom", "bit (MSB ← → LSB)")
         w.getAxis("left").setTicks([[(v, f"{int(v * 100)}%") for v in (0, 0.25, 0.5, 0.75, 1)]])
         w.addItem(pg.InfiniteLine(0.5, angle=0, pen=pg.mkPen(T["warn"], width=1, style=Qt.DashLine)))
-        pl.addWidget(w)
+        pl.addWidget(w, 1)
         return w, p
+
+    # ---------------------------------------------------------------- views
+    def _add_view(self, key, page):
+        """Put `page` in a stack slot, next to the placeholder shown while it is popped out."""
+        slot = QWidget()
+        lay = QVBoxLayout(slot)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(page, 1)
+        ph = QWidget()
+        pl = QVBoxLayout(ph)
+        pl.addStretch(1)
+        pl.addWidget(hint(f"{dict(VIEWS)[key]} is open in its own window.", wrap=False), 0, Qt.AlignHCenter)
+        back = QPushButton("Bring it back")
+        back.clicked.connect(lambda: self.windows[key].close() if key in self.windows else None)
+        pl.addWidget(back, 0, Qt.AlignHCenter)
+        pl.addStretch(1)
+        ph.hide()
+        lay.addWidget(ph, 1)
+        slot.placeholder = ph
+        self.pages[key], self.slots[key] = page, slot
+        self.stack.addWidget(slot)
+
+    def show_view(self, key):
+        self.view = key
+        self.view_btns[key].setChecked(True)
+        self.stack.setCurrentWidget(self.slots[key])
+        self.pop_btn.setEnabled(key not in self.windows)
+        self._refresh(self.isVisible())
+
+    def pop_out(self, key):
+        if key in self.windows:
+            self.windows[key].raise_()
+            self.windows[key].activateWindow()
+            return
+        win = _PopOut(f"{dict(VIEWS)[key]} · wsteg", self)
+        win.layout().addWidget(self.pages[key])
+        self.slots[key].placeholder.show()
+        self.windows[key] = win
+        win.closed.connect(lambda: self._dock(key))
+        win.resize(1100, 620)
+        win.show()
+        self.pop_btn.setEnabled(key != self.view)
+        self._refresh(self.isVisible())
+
+    def _dock(self, key):
+        win = self.windows.pop(key, None)
+        if win is None:
+            return
+        slot = self.slots[key]
+        slot.placeholder.hide()
+        slot.layout().insertWidget(0, self.pages[key], 1)
+        self.pages[key].show()
+        win.deleteLater()
+        self.pop_btn.setEnabled(self.view not in self.windows)
+
+    def _shown(self, key, tab_visible):
+        return key in self.windows or (tab_visible and key == self.view)
 
     # ---------------------------------------------------------------- data flow
     def set_audio(self, audio):
@@ -209,37 +301,44 @@ class BitPlanesTab(QWidget):
         for w in (self.heat_w, self.win_w):
             w.getAxis("left").setTicks(_bit_ticks(n))
             w.setYRange(-0.5, n - 0.5, padding=0)
-        self.dirty = True
+        self.dirty = {"stats", "window", "plane"}
+        self._refresh(self.isVisible())
 
     def refresh_if_dirty(self):
-        if self.dirty and self.audio:
-            self.dirty = False
-            self.load_stats()
-            self.load_window()
-            self.load_plane()
+        """Called when the tab is shown."""
+        self._refresh(True)
+
+    def _refresh(self, tab_visible):
+        if not self.audio:
+            return
+        for data, load in (("stats", self.load_stats), ("window", self.load_window), ("plane", self.load_plane)):
+            if data in self.dirty and any(self._shown(k, tab_visible) for k, d in VIEW_DATA.items() if d == data):
+                load()
 
     def _sel_changed(self):
         if not self.audio:
             return
         self.offset = 0
-        self.dirty = True
-        if self.isVisible():
-            self.refresh_if_dirty()
+        self.dirty = {"stats", "window", "plane"}
+        self._refresh(self.isVisible())
 
     def load_stats(self):
         if self.audio:
+            self.dirty.discard("stats")
             self.runner.submit("bitstats", _stats, self.audio, self.m.sel, int(self.chunks.currentData()),
                                on_ok=self._got_stats)
 
     def load_window(self):
         if self.audio:
+            self.dirty.discard("window")
             self.runner.submit("bitwindow", _bit_window, self.audio, self.m.sel, self.offset,
                                int(self.count.currentData()), on_ok=self._got_window)
 
     def load_plane(self):
         if self.audio and self.bi_bit.count():
+            self.dirty.discard("plane")
             self.runner.submit("bitplane", _bit_plane, self.audio, self.m.sel, int(self.bi_bit.currentData() or 0),
-                               max(1, self.bi_width.value()), int(self.bi_max.currentData()), on_ok=self._got_plane)
+                               self.bi_width.value(), int(self.bi_max.currentData()), on_ok=self._got_plane)
 
     def set_offset(self, off):
         self.offset = max(0, int(off))
@@ -360,6 +459,10 @@ class BitPlanesTab(QWidget):
         c = self._heat_cell(ev.scenePos())
         if c:
             self.set_offset(self.stats["chunk_starts"][c[0]])
+            if "viewer" in self.windows:
+                self.windows["viewer"].raise_()
+            else:
+                self.show_view("viewer")
 
     def _win_hover(self, w, pos):
         p = self._vpos(w, pos)
@@ -396,7 +499,7 @@ class BitPlanesTab(QWidget):
     def _save_plane(self):
         if not self.plane:
             return
-        name = f"bitplane_b{self.bi_bit.currentData()}_w{self.bi_width.value()}.png"
+        name = f"bitplane_b{self.bi_bit.currentData()}_w{self.plane['img'].shape[1]}.png"
         path, _ = QFileDialog.getSaveFileName(self, "Save bit plane image", name, "PNG (*.png)")
         if path:
             self.bi_img.save(path)

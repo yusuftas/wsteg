@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import make_samples  # noqa: E402
 
 from wsteg import analysis  # noqa: E402
-from wsteg.extract import ExtractOptions, Selection, extract, select, selected_index  # noqa: E402
+from wsteg.extract import ExtractOptions, Selection, extract, select, selected_index, try_combinations  # noqa: E402
 from wsteg.wavio import load_file  # noqa: E402
 
 TMP = tempfile.mkdtemp()
@@ -56,6 +56,17 @@ def test_interleaved():
     sel = Selection("interleaved", 1, None, 4, 1)
     data, _ = extract(a, sel, ExtractOptions(bits=[1, 0], max_bytes=64))
     assert data.startswith(make_samples.PAYLOAD_STEREO)
+
+
+def test_try_combinations():
+    a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
+    rows = try_combinations(a, Selection("ch0", 0, None, 2, 1), ExtractOptions(bits=[0, 1], pack="lsb"))
+    assert len(rows) == 12 and len({(r["source"], tuple(r["bits"]), r["pack"]) for r in rows}) == 12
+    assert (rows[0]["source"], rows[0]["bits"], rows[0]["pack"]) == ("ch1", [1, 0], "msb")
+    assert rows[0]["head"].startswith(make_samples.PAYLOAD_STEREO[:32]) and rows[0]["flags"]
+    m = load_file(os.path.join(TMP, "demo_mono24.wav"))
+    rows = try_combinations(m, Selection("ch0", 1000, None, 3, 1), ExtractOptions(bits=[0]))
+    assert [(r["source"], r["pack"]) for r in rows] == [("ch0", "lsb"), ("ch0", "msb")]
 
 
 def test_bitstats_and_spectrogram():

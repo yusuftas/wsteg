@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
@@ -123,6 +123,41 @@ def extract(audio: Audio, sel: Selection, opts: ExtractOptions) -> tuple[bytes, 
     max_bits = opts.max_bytes * 8 if opts.max_bytes else None
     bs = extract_bitstream(samples, opts.bits, opts.invert, max_bits)
     return pack_bits(bs, opts.pack), bs
+
+
+def combinations(channels: int, bits: list[int]) -> list[tuple[str, list[int], str]]:
+    """Every (source, bit order, pack) worth trying for a set of chosen bits:
+    each channel plus all channels interleaved, the bits high->low, low->high
+    and in the order given, packed MSB- and LSB-first."""
+    sources = [f"ch{i}" for i in range(channels)] + (["interleaved"] if channels > 1 else [])
+    orders = []
+    for o in (sorted(set(bits), reverse=True), sorted(set(bits)), list(bits)):
+        if o and o not in orders:
+            orders.append(o)
+    return [(src, o, pack) for src in sources for o in orders for pack in ("msb", "lsb")]
+
+
+def try_combinations(audio: Audio, sel: Selection, opts: ExtractOptions, head_bytes=4096, preview=64) -> list[dict]:
+    """Extract only the first `head_bytes` of every combination and rank them.
+
+    The sample range (start/end/step/take/reverse), inversion and max_bytes come
+    from `sel` / `opts`; source, bit order and packing are varied. Rows with a
+    flag come first, then file signatures, then the most printable previews.
+    """
+    limit = min(head_bytes, opts.max_bytes) if opts.max_bytes else head_bytes
+    rows = []
+    for i, (src, bits, pack) in enumerate(combinations(audio.channels, opts.bits)):
+        data, _ = extract(audio, replace(sel, source=src), replace(opts, bits=bits, pack=pack, max_bytes=limit))
+        a = analyze_payload(data)
+        head = data[:preview]
+        rows.append({
+            "source": src, "bits": bits, "pack": pack, "head": head, "bytes": len(data),
+            "flags": a["flags"], "magic": a["magic"], "magic_later": a["magic_later"],
+            "printable": sum(1 for c in head if 32 <= c < 127 or c in (9, 10, 13)) / max(1, len(head)),
+            "order": i,
+        })
+    rows.sort(key=lambda r: (not r["flags"], not r["magic"], -r["printable"], r["order"]))
+    return rows
 
 
 # ---------------------------------------------------------------- detection

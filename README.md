@@ -48,24 +48,35 @@ with one click).
   Playhead follows playback. Save as PNG.
 
 **Bit planes** (follows the shared *Samples* selection)
+- One view at a time, picked from the *View* switcher: bit statistics, distribution
+  heatmap, bit viewer or bit plane image. *Pop out* opens the current view in its own
+  window, so two views (or a view and another tab) can sit side by side. A view is only
+  computed while it is on screen.
 - Ones ratio and transition rate for every bit (MSB ← → LSB).
 - Heatmap of each bit's ones ratio across the file, in chunks, with an adjustable
-  color range (50 ± 1% shows faint bias). Click a cell to jump the bit viewer there.
+  color range (50 ± 1% shows faint bias). Click a cell to open the bit viewer there.
 - Bit viewer: raw bits of consecutive samples. Rows chosen in Extract are highlighted.
   Hover shows the hex, signed and binary value and the source index.
-- Bit plane image: one bit per sample wrapped into rows of width W. Hidden bitmaps
+- Bit plane image: one bit per sample wrapped into rows. The image is square by default;
+  set a width W to wrap at a specific row length. Hidden bitmaps
   and QR codes show up here. Zoomable, and saves as a native-resolution PNG.
 
 **Extract**
 - Source: one channel, all channels interleaved (file order), or all channels sequentially.
 - Samples: start/end, then **keep `take` of every `step` samples**. Presets cover all,
   even and odd. Reverse is optional.
-- Bits: toggle chips or type the list. Bits are emitted **in the listed order**
-  (`1,0` vs `0,1`). Bytes can be packed MSB-first or LSB-first, with optional inversion
-  and a max-bytes limit.
+- Bits: toggle the chips for the bits to read from each sample.
+- **Try combinations** (Ctrl+Enter) is the starting point: it keeps the sample range and
+  the chosen bits, and previews the first bytes of every channel / all-interleaved × bit
+  order (high→low, low→high, as listed) × MSB/LSB packing combination. Rows with a flag
+  or a file signature are listed first.
+- Click a combination to open its settings and run it in full, with the output shown
+  under the table. The settings (also behind *Manual settings*) are bit order or a typed
+  bit list emitted **in the listed order** (`1,0` vs `0,1`), MSB-first or LSB-first
+  packing, inversion and a max-bytes limit. *Extract* (Ctrl+Enter once the settings are
+  open) reruns after a change.
 - Result: flag-pattern search, magic bytes (also at later offsets), entropy, printable
   ratio and a length-prefix hint. Views: hex, text, bits and strings. Save as `.bin`.
-  Ctrl+Enter runs the extraction.
 
 Bit numbering: **bit 0 = LSB** of the stored sample container (8-bit WAV is unsigned,
 16/24/32-bit are two's complement as stored, float is the raw IEEE bit pattern).

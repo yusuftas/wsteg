@@ -1,29 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Extraction tab: choose samples + bits, pack, analyze and save the payload."""
+"""Extraction tab: choose samples + bits, try every combination, then refine, analyze and save one."""
 from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ..extract import ExtractOptions, analyze_payload, extract
-from .common import T, badge, code_view, hexdump, hint, labeled, panel, row
-from .selection import SelectionBar
+from ..extract import ExtractOptions, analyze_payload, extract, try_combinations
+from .common import T, badge, code_view, hexdump, hint, labeled, mono_font, panel, row
+from .selection import SelectionBar, channel_name
 
 HEX_PREVIEW = 64 * 1024
+COMBO_COLS = ["Source", "Bits", "Pack", "Findings", "Printable", "Text", "Hex"]
+START_HINT = ("Pick the bits above and press <b>Try combinations</b> (Ctrl+Enter) to preview every source, "
+              "bit order and packing. Click a result to open its settings and the full output.")
+
+
+def _printable(data: bytes) -> str:
+    return "".join(chr(c) if 32 <= c < 127 else "·" for c in data)
 
 
 def _run(audio, sel, opts):
@@ -71,19 +84,32 @@ class ExtractTab(QWidget):
         self.max_bytes.setSpecialValueText("all")
         self.max_bytes.setToolTip("Stop after this many output bytes (0 = all)")
         self.go = QPushButton("Extract")
-        self.go.setObjectName("primary")
-        self.go.setShortcut("Ctrl+Return")
+        self.go.setToolTip("Run the extraction with exactly these settings (Ctrl+Enter)")
         self.save = QPushButton("Save .bin…")
         self.save.setEnabled(False)
-        pl.addLayout(row(labeled("Order", self.order), labeled("Bit list", self.bits_edit),
+        self.brute = QPushButton("Try combinations")
+        self.brute.setObjectName("primary")
+        self.brute.setToolTip("Keep the sample range and the chosen bits, and preview the start of the output for\n"
+                              "every channel / interleaved × bit order × MSB/LSB packing combination")
+        self.manual = QPushButton("Manual settings")
+        self.manual.setCheckable(True)
+        self.manual.setToolTip("Show bit order, packing, inversion and length settings for a single extraction")
+        pl.addLayout(row(self.brute, self.manual))
+        # one extraction's settings: hidden until a combination is picked or "Manual settings" is on
+        self.settings = QWidget()
+        sl = QVBoxLayout(self.settings)
+        sl.setContentsMargins(0, 4, 0, 0)
+        sl.addLayout(row(labeled("Order", self.order), labeled("Bit list", self.bits_edit),
                          labeled("Pack bytes", self.pack), self.invert, labeled("Max bytes", self.max_bytes),
                          self.go, self.save))
         self.explain = hint("")
-        pl.addWidget(self.explain)
+        sl.addWidget(self.explain)
+        self.settings.hide()
+        pl.addWidget(self.settings)
         lay.addWidget(p)
 
         p, pl = panel("Result")
-        self.summary = QLabel("Run an extraction (Ctrl+Enter).")
+        self.summary = QLabel(START_HINT)
         self.summary.setTextFormat(Qt.RichText)
         self.summary.setWordWrap(True)
         self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -92,7 +118,31 @@ class ExtractTab(QWidget):
         self.hex_v, self.text_v, self.bits_v, self.str_v = code_view(), code_view(True), code_view(True), code_view()
         for w, n in ((self.hex_v, "Hex"), (self.text_v, "Text"), (self.bits_v, "Bits"), (self.str_v, "Strings")):
             self.views.addTab(w, n)
-        pl.addWidget(self.views, 1)
+        self.combo_info = hint("")
+        self.combo_info.hide()
+        pl.addWidget(self.combo_info)
+        self.combo_table = QTableWidget(0, len(COMBO_COLS))
+        self.combo_table.setHorizontalHeaderLabels(COMBO_COLS)
+        self.combo_table.setFont(mono_font(10))
+        self.combo_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.combo_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.combo_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.combo_table.setWordWrap(False)
+        self.combo_table.verticalHeader().setVisible(False)
+        self.combo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.combo_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # combinations on top, the full output of the picked / manual extraction below
+        self.split = QSplitter(Qt.Vertical)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self.combo_table)
+        self.split.addWidget(self.views)
+        self.combo_table.hide()
+        self.views.hide()
+        pl.addWidget(self.split, 1)
+        self.combos = []
+        self.combo_key = None
+        self.combo_text = ""
+        self._picked = None
         lay.addWidget(p, 1)
 
         self.order.currentIndexChanged.connect(self._chips_to_text)
@@ -102,6 +152,11 @@ class ExtractTab(QWidget):
         self.max_bytes.valueChanged.connect(self._explain)
         self.m.changed.connect(self._explain)
         self.go.clicked.connect(self.run)
+        self.brute.clicked.connect(self.run_combinations)
+        self.manual.toggled.connect(self.settings.setVisible)
+        self.combo_table.cellPressed.connect(lambda r, _c: self._pick(r))
+        self.combo_table.currentCellChanged.connect(lambda r, *_: self._pick(r))
+        QShortcut(QKeySequence("Ctrl+Return"), self, self._shortcut)
         self.save.clicked.connect(self._save)
 
     # ---------------------------------------------------------------- bits
@@ -112,6 +167,9 @@ class ExtractTab(QWidget):
         self.audio = audio
         self.result = None
         self.save.setEnabled(False)
+        self.summary.setText(START_HINT)
+        self.views.hide()
+        self._clear_combos()
         for b in self.chips.values():
             b.deleteLater()
         self.chips = {}
@@ -175,12 +233,21 @@ class ExtractTab(QWidget):
             f"of each sample, pack {self.pack.currentData().upper()}-first"
             f"{', inverted' if self.invert.isChecked() else ''}. ≈ {total:,} bytes"
             f"{f' (limited to {mb:,})' if mb and mb < total else ''}.")
+        if self.combos:
+            stale = self._combo_key() != self.combo_key
+            self.combo_info.setText(self.combo_text + (
+                f' <span style="color:{T["warn"]}">The sample range or bits changed since — '
+                f'press Try combinations again.</span>' if stale else ""))
 
     # ---------------------------------------------------------------- run
     def options(self) -> ExtractOptions:
         return ExtractOptions.from_dict({"bits": self.bits(), "pack": self.pack.currentData(),
                                          "invert": self.invert.isChecked(),
                                          "max_bytes": self.max_bytes.value() or None}, self.audio.nbits)
+
+    def _shortcut(self):
+        """Ctrl+Enter: the single extraction once its settings are open, else the combinations."""
+        (self.run if self.settings.isVisibleTo(self) else self.run_combinations)()
 
     def run(self):
         if not self.audio:
@@ -203,6 +270,7 @@ class ExtractTab(QWidget):
         self.go.setEnabled(True)
         self.go.setText("Extract")
         self.result = r
+        self.views.show()
         self.save.setEnabled(bool(r["data"]))
         a, data = r["analysis"], r["data"]
         parts = [badge(f"{r['total_bits']:,} bits → {len(data):,} bytes")]
@@ -224,6 +292,117 @@ class ExtractTab(QWidget):
         self.str_v.setPlainText("\n".join(a["strings"]) or "(no printable runs ≥ 6 chars)")
         if a["flags"]:
             self.status.emit(f"flag found: {a['flags'][0]}")
+
+    # ---------------------------------------------------------------- combinations
+    def _source_name(self, src):
+        return "interleaved" if src == "interleaved" else channel_name(int(src[2:]), self.audio.channels)
+
+    def _combo_key(self):
+        """What a combination run depends on (everything except source, bit order and packing)."""
+        s = self.m.sel
+        return (s.start, s.end, s.step, s.take, s.reverse, frozenset(self.bits()),
+                self.invert.isChecked(), self.max_bytes.value())
+
+    def _clear_combos(self):
+        self.combos, self.combo_key, self._picked = [], None, None
+        self.combo_table.blockSignals(True)
+        self.combo_table.setRowCount(0)
+        self.combo_table.blockSignals(False)
+        self.combo_table.hide()
+        self.combo_info.hide()
+
+    def run_combinations(self):
+        if not self.audio:
+            return
+        try:
+            opts = self.options()
+        except ValueError as e:
+            self.summary.setText(badge(str(e), "bad"))
+            return
+        self.brute.setEnabled(False)
+        self.brute.setText("Trying…")
+        self._pending_key = self._combo_key()
+        self.runner.submit("combos", try_combinations, self.audio, self.m.sel, opts,
+                           on_ok=self._got_combos, on_err=self._combos_err)
+
+    def _combos_err(self, e):
+        self.brute.setEnabled(True)
+        self.brute.setText("Try combinations")
+        self.summary.setText(badge(f"{type(e).__name__}: {e}", "bad"))
+
+    def _got_combos(self, rows):
+        self.brute.setEnabled(True)
+        self.brute.setText("Try combinations")
+        self._clear_combos()
+        self.combos, self.combo_key = rows, self._pending_key
+        t = self.combo_table
+        t.blockSignals(True)
+        t.setRowCount(len(rows))
+        hits = 0
+        for i, r in enumerate(rows):
+            found = [f"⚑ {f}" for f in r["flags"][:3]] + [f"file: {m}" for m in r["magic"]]
+            found += [f"{m['type']} @ 0x{m['offset']:x}" for m in r["magic_later"][:2]]
+            hit = bool(r["flags"] or r["magic"])
+            hits += hit
+            cells = [self._source_name(r["source"]), ",".join(map(str, r["bits"])), r["pack"].upper() + " first",
+                     "  ".join(found), f"{r['printable'] * 100:.0f}%", _printable(r["head"]), r["head"].hex(" ")]
+            for c, text in enumerate(cells):
+                it = QTableWidgetItem(text)
+                if hit:
+                    it.setForeground(QColor(T["good"]))
+                elif c == 3 and found:
+                    it.setForeground(QColor(T["warn"]))
+                t.setItem(i, c, it)
+        head = len(rows[0]["head"]) if rows else 0
+        s = self.m.sel
+        rng = f"from sample {s.start}" + (f" to {s.end}" if s.end is not None else "")
+        pick = "" if s.step == 1 else f", {s.take} of every {s.step}"
+        t.setCurrentCell(-1, -1)
+        t.blockSignals(False)
+        t.show()
+        self.combo_text = (
+            f"{len(rows)} combinations of source × bit order × packing, {rng}{pick}"
+            f"{', reversed' if s.reverse else ''}{', inverted' if self.invert.isChecked() else ''}. "
+            f"First {head} bytes shown; flags and file signatures are searched in the first "
+            f"{max((r['bytes'] for r in rows), default=0):,} bytes. Best matches first. "
+            "Click a row to open its settings and run that extraction in full.")
+        self.combo_info.setTextFormat(Qt.RichText)
+        self.combo_info.show()
+        self._explain()
+        self.summary.setText(badge(f"{len(rows)} combinations tried") +
+                             badge(f"{hits} with a flag or file signature" if hits else "no flag or file signature",
+                                   "good" if hits else ""))
+        best = next((r for r in rows if r["flags"]), None)
+        if best:
+            self.status.emit(f"flag found: {best['flags'][0]}")
+
+    def _pick(self, i):
+        # a click fires both cellPressed and currentCellChanged: apply once, after the event
+        if i >= 0 and self._picked is None:
+            QTimer.singleShot(0, self._apply_picked)
+        self._picked = i if i >= 0 else self._picked
+
+    def _apply_picked(self):
+        i, self._picked = self._picked, None
+        if i is not None:
+            self.apply_combination(i)
+
+    def apply_combination(self, i):
+        """Open the settings with combination row `i` loaded and run the full extraction."""
+        if not 0 <= i < len(self.combos):
+            return
+        r = self.combos[i]
+        bits = r["bits"]
+        mode = "desc" if bits == sorted(bits, reverse=True) else "asc" if bits == sorted(bits) else "custom"
+        for w, v in ((self.order, mode), (self.pack, r["pack"])):
+            w.blockSignals(True)
+            w.setCurrentIndex(w.findData(v))
+            w.blockSignals(False)
+        self.bits_edit.setText(",".join(map(str, bits)))
+        self._text_changed()
+        self.m.update(source=r["source"])
+        self.manual.setChecked(True)
+        self.run()
 
     def _save(self):
         if not self.result:

@@ -91,16 +91,74 @@ def test_extract_finds_flag(window):
     assert make_samples.PAYLOAD_STEREO.decode() in w.extract.summary.text()
 
 
+def test_extract_combinations(window):
+    w = window
+    w.sel.update(source="ch0", start=0, step=2, take=1)  # wrong channel on purpose
+    w.tabs.setCurrentIndex(3)
+    ex = w.extract
+    ex.set_audio(w.audio)  # fresh state: only the bit chips and "Try combinations" are offered
+    ex.manual.setChecked(False)
+    w.pump(0.2)
+    assert not ex.settings.isVisible() and not ex.combo_table.isVisible() and not ex.views.isVisible()
+    ex.bits_edit.setText("0,1")
+    ex._text_changed()
+    ex.pack.setCurrentIndex(ex.pack.findData("lsb"))
+    ex._shortcut()  # Ctrl+Enter tries the combinations while the settings are closed
+    w.pump(1.5)
+    assert ex.combo_table.isVisible() and not ex.settings.isVisible() and not ex.views.isVisible()
+    assert len(ex.combos) == ex.combo_table.rowCount() == 3 * 2 * 2  # L, R, interleaved x order x pack
+    best = ex.combos[0]
+    assert (best["source"], best["bits"], best["pack"]) == ("ch1", [1, 0], "msb")
+    assert make_samples.PAYLOAD_STEREO.decode() in ex.combo_table.item(0, 3).text()
+    ex.combo_table.setCurrentCell(0, 0)  # picking a row opens its settings and runs it in full
+    w.pump(1.5)
+    assert ex.settings.isVisible() and ex.views.isVisible() and ex.combo_table.isVisible()
+    assert "again" not in ex.combo_info.text()  # the picked source doesn't make the table stale
+    w.sel.update(start=4)
+    assert "again" in ex.combo_info.text()
+    w.sel.update(start=0)
+    assert w.sel.sel.source == "ch1" and ex.bits() == [1, 0] and ex.pack.currentData() == "msb"
+    assert ex.result["data"].startswith(make_samples.PAYLOAD_STEREO)
+
+
 def test_bitplanes(window):
     w = window
     w.tabs.setCurrentIndex(2)
     w.pump(2.0)
     bp = w.bitplanes
     assert bp.stats and len(bp.stats["ones"]) == 16
-    assert bp.win is not None and bp.plane is not None
+    assert bp.win is None and bp.plane is None  # other views load only when shown
+    assert bp.stack.currentWidget() is bp.slots["stats"]
+    bp.show_view("viewer")
+    w.pump(0.5)
+    assert bp.win is not None and bp.plane is None
     bp.set_offset(1000)
     w.pump(0.5)
     assert bp.win["offset"] == 1000
+    bp.show_view("image")
+    w.pump(0.5)
+    assert bp.plane is not None and not bp.dirty
+    rows, width = bp.plane["img"].shape  # square by default
+    assert rows == width and (width - 1) ** 2 < bp.plane["n"] <= width ** 2
+    bp.bi_width.setValue(256)
+    bp.load_plane()
+    w.pump(0.5)
+    assert bp.plane["img"].shape == (-(-bp.plane["n"] // 256), 256)
+    bp.bi_width.setValue(0)
+    bp.load_plane()
+    w.pump(0.5)
+    # pop a view out, keep it live while another view is selected, then dock it again
+    bp.pop_out("image")
+    bp.show_view("heat")
+    assert bp.pages["image"].window() is bp.windows["image"]
+    bp.plane = None
+    w.sel.update(start=10)
+    w.pump(0.8)
+    assert bp.plane is not None and "window" in bp.dirty
+    bp.windows["image"].close()
+    w.pump(0.2)
+    assert not bp.windows and bp.pages["image"].parent() is bp.slots["image"]
+    w.sel.update(start=0)
 
 
 def test_second_file(window):
