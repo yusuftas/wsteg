@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Sample selection, bit extraction and payload detection."""
 from __future__ import annotations
 

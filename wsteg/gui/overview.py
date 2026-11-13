@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Overview tab: file facts, channel stats, waveform, RIFF chunks, trailing data."""
 from __future__ import annotations
 

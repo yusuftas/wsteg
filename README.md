@@ -111,3 +111,15 @@ wsteg/gui/          Qt desktop app (one module per tab)
 packaging/          PyInstaller spec, entry points, icons
 scripts/            build.py, make_icon.py
 ```
+
+## License
+
+Copyright (C) 2026 Yusuf Tas
+
+wsteg is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+
+The standalone builds also bundle third-party components under their own licenses:
+Qt/PySide6 (LGPL-3.0), pyqtgraph (MIT), NumPy (BSD-3-Clause), FFmpeg libraries shipped
+with Qt Multimedia (LGPL-2.1+), and on Linux libxcb-cursor (MIT).

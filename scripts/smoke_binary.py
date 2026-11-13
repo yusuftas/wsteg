@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Smoke-test a PyInstaller build: CLI extraction + GUI startup (offscreen).
 
     python scripts/smoke_binary.py dist/linux/wsteg

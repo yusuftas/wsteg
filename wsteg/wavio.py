@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """WAV loading that preserves the exact stored sample bits.
 
 Unlike most audio libraries (which convert to float and may resample), this

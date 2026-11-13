@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared sample-selection model and the bar widget that edits it."""
 from __future__ import annotations
 

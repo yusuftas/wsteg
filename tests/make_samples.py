@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Generate demo/test WAV files with known hidden content.
 
     python tests/make_samples.py [outdir]

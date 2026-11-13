@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Extraction tab: choose samples + bits, pack, analyze and save the payload."""
 from __future__ import annotations
 

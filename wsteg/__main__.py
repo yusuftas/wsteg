@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Command line entry point.
 
     python -m wsteg [files...]              # desktop app

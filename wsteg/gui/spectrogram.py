@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Spectrogram / waterfall tab with detail-on-zoom recomputation."""
 from __future__ import annotations
 

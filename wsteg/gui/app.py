@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Main window and application entry point."""
 from __future__ import annotations
 
@@ -293,7 +294,10 @@ class MainWindow(QMainWindow):
     def _about(self):
         QMessageBox.about(self, "About wsteg",
                           f"<b>wsteg {__version__}</b><br>Audio steganography workbench for CTFs.<br><br>"
-                          "Bit numbering: bit 0 = LSB of the stored sample container.")
+                          "Bit numbering: bit 0 = LSB of the stored sample container.<br><br>"
+                          "Copyright © 2026 Yusuf Tas<br>"
+                          "Licensed under the GNU General Public License v3 or later. "
+                          "This program comes with ABSOLUTELY NO WARRANTY.")
 
 
 def main(argv=None):

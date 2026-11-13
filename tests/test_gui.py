@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Offscreen smoke test of the desktop app: load a file and drive every tab.
 
 Skipped automatically when PySide6/pyqtgraph aren't installed.

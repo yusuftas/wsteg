@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Release helper (see RELEASING.md).
 
     python scripts/release.py 0.2.0        # bump version, date the changelog, commit + tag v0.2.0

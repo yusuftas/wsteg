@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared GUI helpers: theme, colormaps, background workers, small widgets."""
 from __future__ import annotations
 

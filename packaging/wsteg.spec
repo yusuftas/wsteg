@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # PyInstaller spec — run via `python scripts/build.py` (works on Windows and Linux).
 # Produces dist/wsteg/ containing:
 #   wsteg-gui(.exe)  windowed desktop app

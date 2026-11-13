@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bit-plane analysis tab: per-bit stats, distribution heatmap, bit viewer, bit-plane image."""
 from __future__ import annotations
 

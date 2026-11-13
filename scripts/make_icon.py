@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Render the wsteg icon (PNG for the app/Linux, ICO for the Windows exe)."""
 import math
 import os

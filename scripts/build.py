@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build a standalone wsteg app for the current OS (Windows or Linux).
 
     python scripts/build.py              # dist/wsteg/ folder + archive
@@ -36,9 +37,11 @@ def main():
         exe = "wsteg-gui.exe" if os.name == "nt" else "wsteg-gui"
         out = os.path.join(dist, tag + (".exe" if os.name == "nt" else ""))
         shutil.copy2(os.path.join(dist, exe), out)
+        shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(dist, "LICENSE.txt"))
         print("built", out)
         return
     folder = os.path.join(dist, "wsteg")
+    shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(folder, "LICENSE.txt"))  # GPL: ship the license
     print("built", folder)
     if not a.no_archive:
         fmt = "zip" if os.name == "nt" else "gztar"
