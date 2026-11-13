@@ -6,6 +6,8 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
 ### Added
 - Extract: **Try combinations** previews the start of the output for every source
   (each channel, all interleaved) × bit order × MSB/LSB packing, ranked by flags, file
