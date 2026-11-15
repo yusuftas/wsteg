@@ -2,8 +2,6 @@
 """Extraction tab: choose samples + bits, try every combination, then refine, analyze and save one."""
 from __future__ import annotations
 
-import re
-
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -11,10 +9,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QGridLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -26,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..extract import ExtractOptions, analyze_payload, extract, try_combinations
+from .bitpicker import BitPicker
 from .common import T, badge, code_view, hexdump, hint, labeled, mono_font, panel, row
 from .selection import SelectionBar, channel_name
 
@@ -55,7 +52,8 @@ class ExtractTab(QWidget):
         self.m = sel_model
         self.audio = None
         self.result = None
-        self.chips = {}
+        self.picker = BitPicker(self)
+        self.order, self.bits_edit = self.picker.order, self.picker.edit
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 12)
@@ -63,17 +61,7 @@ class ExtractTab(QWidget):
         lay.addWidget(SelectionBar(sel_model))
 
         p, pl = panel("Bits to extract from each selected sample", "bit 0 = LSB · click to toggle")
-        self.chip_grid = QGridLayout()
-        self.chip_grid.setHorizontalSpacing(4)
-        self.chip_grid.setVerticalSpacing(4)
-        pl.addLayout(self.chip_grid)
-        self.order = QComboBox()
-        self.order.addItem("high → low (b1,b0)", "desc")
-        self.order.addItem("low → high (b0,b1)", "asc")
-        self.order.addItem("custom (edit the list)", "custom")
-        self.bits_edit = QLineEdit("0")
-        self.bits_edit.setToolTip("Comma-separated bit indices, emitted in exactly this order")
-        self.bits_edit.setMaximumWidth(180)
+        pl.addLayout(self.picker.grid)
         self.pack = QComboBox()
         self.pack.addItem("MSB first", "msb")
         self.pack.addItem("LSB first", "lsb")
@@ -145,8 +133,7 @@ class ExtractTab(QWidget):
         self._picked = None
         lay.addWidget(p, 1)
 
-        self.order.currentIndexChanged.connect(self._chips_to_text)
-        self.bits_edit.textEdited.connect(self._text_changed)
+        self.picker.changed.connect(self._bits_changed)
         self.pack.currentIndexChanged.connect(self._explain)
         self.invert.toggled.connect(self._explain)
         self.max_bytes.valueChanged.connect(self._explain)
@@ -160,8 +147,15 @@ class ExtractTab(QWidget):
         self.save.clicked.connect(self._save)
 
     # ---------------------------------------------------------------- bits
+    @property
+    def chips(self):
+        return self.picker.chips
+
     def bits(self) -> list[int]:
-        return [int(x) for x in re.split(r"[\s,]+", self.bits_edit.text().strip()) if x.isdigit()]
+        return self.picker.bits()
+
+    def _text_changed(self):
+        self.picker.text_changed()
 
     def set_audio(self, audio):
         self.audio = audio
@@ -170,55 +164,11 @@ class ExtractTab(QWidget):
         self.summary.setText(START_HINT)
         self.views.hide()
         self._clear_combos()
-        for b in self.chips.values():
-            b.deleteLater()
-        self.chips = {}
-        n = audio.nbits
-        per_row = 16
-        for i, b in enumerate(range(n - 1, -1, -1)):
-            btn = QPushButton(f"b{b}")
-            btn.setCheckable(True)
-            btn.setFixedWidth(46)
-            btn.setToolTip(f"bit {b}" + (" (LSB)" if b == 0 else " (MSB)" if b == n - 1 else ""))
-            btn.toggled.connect(self._chips_to_text)
-            r, c = divmod(i, per_row)
-            self.chip_grid.addWidget(btn, r, c + (c // 8))  # gap column every 8 bits
-            self.chips[b] = btn
-        for c in range(per_row + per_row // 8):
-            self.chip_grid.setColumnStretch(c, 0)
-        self.chip_grid.setColumnStretch(per_row + per_row // 8, 1)
-        bits = [b for b in self.bits() if b < n] or [0]
-        self.bits_edit.setText(",".join(map(str, bits)))
-        self._text_changed()
+        self.picker.set_nbits(audio.nbits)
 
-    def _sync_chips(self):
-        on = set(self.bits())
-        for b, btn in self.chips.items():
-            btn.blockSignals(True)
-            btn.setChecked(b in on)
-            btn.blockSignals(False)
-
-    def _chips_to_text(self):
-        on = [b for b, btn in self.chips.items() if btn.isChecked()]
-        mode = self.order.currentData()
-        if mode == "custom":
-            cur = [b for b in self.bits() if b in on]
-            cur += [b for b in on if b not in cur]
-        else:
-            cur = sorted(on, reverse=mode == "desc")
-        self.bits_edit.setText(",".join(map(str, cur)))
-        self._emit_bits()
-
-    def _text_changed(self):
-        if self.audio and any(b >= self.audio.nbits for b in self.bits()):
-            self.bits_edit.setStyleSheet(f"color: {T['bad']}")
-            return
-        self.bits_edit.setStyleSheet("")
-        self._sync_chips()
-        self._emit_bits()
-
-    def _emit_bits(self):
-        self.bitsChanged.emit(self.bits())
+    def _bits_changed(self, bits):
+        if self.picker.valid() or not bits:
+            self.bitsChanged.emit(bits)
         self._explain()
 
     def _explain(self):
@@ -392,14 +342,10 @@ class ExtractTab(QWidget):
         if not 0 <= i < len(self.combos):
             return
         r = self.combos[i]
-        bits = r["bits"]
-        mode = "desc" if bits == sorted(bits, reverse=True) else "asc" if bits == sorted(bits) else "custom"
-        for w, v in ((self.order, mode), (self.pack, r["pack"])):
-            w.blockSignals(True)
-            w.setCurrentIndex(w.findData(v))
-            w.blockSignals(False)
-        self.bits_edit.setText(",".join(map(str, bits)))
-        self._text_changed()
+        self.pack.blockSignals(True)
+        self.pack.setCurrentIndex(self.pack.findData(r["pack"]))
+        self.pack.blockSignals(False)
+        self.picker.set_bits(r["bits"])
         self.m.update(source=r["source"])
         self.manual.setChecked(True)
         self.run()

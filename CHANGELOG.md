@@ -6,6 +6,13 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Hide** tab: write a file or a typed text into chosen sample bits and save the result
+  as a new WAV. It uses the same sample selection, bit list, bit order, MSB/LSB packing
+  and inversion as Extract, checks live that the data fits, and verifies the result by
+  reading it back. Everything except the chosen bits stays byte-identical.
+- `wsteg hide` command-line counterpart.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added

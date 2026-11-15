@@ -7,7 +7,7 @@ from dataclasses import replace
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QWidget
 
-from ..extract import Selection
+from ..extract import Selection, selected_count
 from .common import T, labeled
 
 INT_MAX = 2_147_483_647
@@ -46,12 +46,7 @@ class SelectionModel(QObject):
         return self.frames * (self.channels if self.sel.source in ("interleaved", "sequential") else 1)
 
     def count(self) -> int:
-        s = self.sel
-        total = self.stream_len()
-        end = total if s.end is None else min(total, s.end)
-        n = max(0, end - s.start)
-        take = min(s.take, s.step)
-        return n // s.step * take + min(take, n % s.step)
+        return selected_count(self.stream_len(), self.sel)
 
     def describe(self) -> str:
         s = self.sel

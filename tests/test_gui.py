@@ -161,6 +161,47 @@ def test_bitplanes(window):
     w.sel.update(start=0)
 
 
+def test_hide(window):
+    w = window
+    w.tabs.setCurrentIndex(4)
+    h = w.hide_tab
+    w.sel.update(source="ch0", start=0, end=None, step=1, take=1)
+    w.pump(0.2)
+    assert not h.go.isEnabled() and "No data yet" in h.capacity.text()
+    h.set_payload_text("flag{made_with_the_hide_tab}")
+    h.picker.set_bits([0, 2])
+    h.pack.setCurrentIndex(h.pack.findData("lsb"))
+    assert h.go.isEnabled() and "Fits" in h.capacity.text() and h.payload_info.text().startswith("28 bytes")
+    w.sel.update(end=100)  # 100 samples x 2 bits = 200 bits < 224
+    assert not h.go.isEnabled() and "Does not fit" in h.capacity.text() and "3 bytes short" in h.capacity.text()
+    w.sel.update(end=112)
+    assert h.go.isEnabled()
+    secret = os.path.join(w.tmp, "secret.bin")
+    with open(secret, "wb") as f:
+        f.write(bytes(range(256)) * 4)
+    h.set_payload_file(secret)
+    assert not h.go.isEnabled()
+    w.sel.update(end=None)
+    assert h.go.isEnabled() and h.payload_info.text().startswith("1,024 bytes")
+    out = os.path.join(w.tmp, "out_stego.wav")
+    n = w.file_combo.count()
+    h.hide_to(out)
+    w.pump(2.5)
+    assert h.last["payload_bytes"] == 1024 and "verified" in h.result.text()
+    assert w.file_combo.count() == n + 1 and w.audio.name == "out_stego.wav"  # result opened
+    # read it back through the Extract tab with the same settings
+    ex = w.extract
+    ex.picker.set_bits([0, 2])
+    ex.pack.setCurrentIndex(ex.pack.findData("lsb"))
+    ex.max_bytes.setValue(1024)
+    ex.run()
+    w.pump(1.5)
+    assert ex.result["data"] == bytes(range(256)) * 4
+    ex.max_bytes.setValue(0)
+    w.close_file()
+    w.pump(0.5)
+
+
 def test_second_file(window):
     w = window
     w.open_path(os.path.join(w.tmp, "demo_mono24.wav"))

@@ -24,6 +24,7 @@ from ..wavio import load_file
 from .bitplanes import BitPlanesTab
 from .common import Runner, apply_theme, fmt_time
 from .extract_tab import ExtractTab
+from .hide_tab import HideTab
 from .overview import OverviewTab
 from .selection import SelectionModel
 from .spectrogram import SpectrogramTab
@@ -72,7 +73,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.overview, "Overview")
         self.tabs.addTab(self.spec, "Spectrogram")
         self.tabs.addTab(self.bitplanes, "Bit planes")
+        self.hide_tab = HideTab(self.runner, self.sel)
         self.tabs.addTab(self.extract, "Extract")
+        self.tabs.addTab(self.hide_tab, "Hide")
         self.tabs.currentChanged.connect(self._tab_changed)
         self.empty = QLabel("<h2>No file loaded</h2><p>Open a WAV file (Ctrl+O) or drop it onto this window.</p>"
                            "<p style='color:gray'>Raw stored sample bits are kept exactly (8/16/24/32-bit PCM, float, "
@@ -83,7 +86,8 @@ class MainWindow(QMainWindow):
         self.extract.bitsChanged.connect(self.bitplanes.set_highlight_bits)
         for w in (self.overview, self.spec):
             w.seek.connect(self.seek)
-        for w in (self.spec, self.extract):
+        self.hide_tab.saved.connect(lambda path, open_it: self.open_path(path) if open_it else None)
+        for w in (self.spec, self.extract, self.hide_tab):
             w.status.connect(lambda m: self.statusBar().showMessage(m, 8000))
 
         self._build_actions()
@@ -103,7 +107,7 @@ class MainWindow(QMainWindow):
         fm.addSeparator()
         fm.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
         vm = mb.addMenu("&View")
-        for i, name in enumerate(("Overview", "Spectrogram", "Bit planes", "Extract")):
+        for i, name in enumerate(("Overview", "Spectrogram", "Bit planes", "Extract", "Hide")):
             vm.addAction(QAction(name, self, shortcut=f"Ctrl+{i + 1}", triggered=lambda _=False, i=i: self.tabs.setCurrentIndex(i)))
         vm.addSeparator()
         theme = vm.addMenu("Theme")
@@ -188,6 +192,7 @@ class MainWindow(QMainWindow):
         self.spec.set_audio(audio)
         self.bitplanes.set_audio(audio)
         self.extract.set_audio(audio)
+        self.hide_tab.set_audio(audio)
         ch = {1: "mono", 2: "stereo"}.get(audio.channels, f"{audio.channels} ch")
         depth = f"{'float' if audio.is_float else 'int'} {audio.bits_per_sample}-bit"
         if audio.nbits != audio.bits_per_sample:

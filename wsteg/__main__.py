@@ -4,6 +4,7 @@
     python -m wsteg [files...]              # desktop app
     python -m wsteg info file.wav
     python -m wsteg extract file.wav --source ch0 --step 2 --bits 1,0 -o out.bin
+    python -m wsteg hide cover.wav secret.bin -o out.wav --bits 0
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import argparse
 import json
 import sys
 
+from .embed import capacity_bits, hide
 from .extract import ExtractOptions, Selection, analyze_payload, extract
 from .wavio import load_file
 
@@ -43,8 +45,18 @@ def main(argv=None):
     e.add_argument("--max-bytes", type=int, default=None)
     e.add_argument("-o", "--out", help="output file (default: print analysis + preview)")
 
+    h = sub.add_parser("hide", help="hide a file or text in chosen sample bits and write a new WAV")
+    h.add_argument("file", help="cover audio file (not modified)")
+    h.add_argument("payload", nargs="?", help="file to hide")
+    h.add_argument("--text", help="hide this text (UTF-8) instead of a file")
+    _sel_args(h)
+    h.add_argument("--bits", default="0", help="bit indices in the order they are filled, 0 = LSB (e.g. 1,0)")
+    h.add_argument("--pack", choices=["msb", "lsb"], default="msb")
+    h.add_argument("--invert", action="store_true")
+    h.add_argument("-o", "--out", required=True, help="output WAV file")
+
     argv = sys.argv[1:] if argv is None else argv
-    if not argv or argv[0] not in ("gui", "info", "extract", "-h", "--help"):
+    if not argv or argv[0] not in ("gui", "info", "extract", "hide", "-h", "--help"):
         argv = ["gui", *argv]  # bare `wsteg file.wav` opens the app
     a = ap.parse_args(argv)
 
@@ -61,6 +73,26 @@ def main(argv=None):
         return
 
     sel = Selection(a.source, a.start, a.end, a.step, a.take, a.reverse)
+    if a.cmd == "hide":
+        if (a.payload is None) == (a.text is None):
+            ap.error("hide: give either a payload file or --text")
+        if a.text is not None:
+            payload = a.text.encode("utf-8")
+        else:
+            with open(a.payload, "rb") as f:
+                payload = f.read()
+        try:
+            opts = ExtractOptions.from_dict({"bits": a.bits, "pack": a.pack, "invert": a.invert}, audio.nbits)
+            cap = capacity_bits(audio, sel, opts.bits)
+            data, st = hide(audio, sel, opts, payload)
+        except ValueError as e:
+            sys.exit(f"wsteg hide: {e}")
+        with open(a.out, "wb") as f:
+            f.write(data)
+        print(f"hid {len(payload)} bytes ({len(payload) * 8} of {cap} available bits) in {a.out}; "
+              f"{st['samples_changed']} samples changed", file=sys.stderr)
+        return
+
     opts = ExtractOptions.from_dict(
         {"bits": a.bits, "pack": a.pack, "invert": a.invert, "max_bytes": a.max_bytes}, audio.nbits)
     data, _ = extract(audio, sel, opts)

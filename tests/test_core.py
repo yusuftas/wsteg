@@ -79,3 +79,73 @@ def test_bitstats_and_spectrogram():
     b5k = int(5000 / a.sample_rate * 1024)
     assert q[:, b5k].max() > q[:, b5k].min() + 30  # dB
     assert np.isfinite(meta["max_db"])
+
+
+def test_with_samples_is_byte_identical():
+    from wsteg.wavio import with_samples
+    for name in ("demo_stereo16.wav", "demo_mono24.wav"):
+        a = load_file(os.path.join(TMP, name))
+        assert with_samples(a, a.raw) == a.original  # chunks and trailing bytes included
+
+
+def test_embed_positions_match_select():
+    from wsteg.embed import selected_positions
+    a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
+    a.raw = (np.arange(a.raw.size) % 65521).astype(np.uint16).reshape(a.raw.shape)  # value ~ flat index
+    flat = a.raw.reshape(-1)
+    for sel in (Selection("ch0"), Selection("ch1", 3, 5000, 7, 3), Selection("interleaved", 1, None, 4, 1),
+                Selection("sequential", 10, 400000, 5, 2), Selection("ch1", 0, 1001, 2, 1, True),
+                Selection("sequential", 264590, None, 3, 2, True), Selection("ch0", 999999999)):
+        want = select(a, sel)
+        pos = selected_positions(a, sel, 10**9)
+        assert len(pos) == len(want) and np.array_equal(flat[pos], want), sel
+        assert np.array_equal(selected_positions(a, sel, 50), pos[:50])
+
+
+def test_hide_roundtrip():
+    from wsteg.embed import capacity_bits, hide
+    from wsteg.wavio import load_bytes
+    payload = bytes(range(256)) + b"flag{hidden_by_wsteg}"
+    cases = [
+        ("demo_stereo16.wav", Selection("ch0"), ExtractOptions(bits=[0])),
+        ("demo_stereo16.wav", Selection("interleaved", 5, None, 3, 2), ExtractOptions(bits=[2, 0, 1], pack="lsb")),
+        ("demo_stereo16.wav", Selection("sequential", 100, None, 1, 1, True), ExtractOptions(bits=[15, 0], invert=True)),
+        ("demo_mono24.wav", Selection("ch0", 7, None, 5, 1), ExtractOptions(bits=[1, 0, 23], pack="lsb")),
+    ]
+    for name, sel, opts in cases:
+        a = load_file(os.path.join(TMP, name))
+        data, st = hide(a, sel, opts, payload)
+        b = load_bytes(data, name)
+        opts.max_bytes = len(payload)
+        assert extract(b, sel, opts)[0] == payload, (name, sel)
+        assert len(data) == len(a.original) and b.trailing == a.trailing and not b.warnings
+        # only the chosen bits of the used samples may differ
+        mask = 0
+        for bit in opts.bits:
+            mask |= 1 << bit
+        diff = a.raw ^ b.raw
+        assert not (diff & ~np.array(mask, dtype=diff.dtype)).any()
+        assert 0 < st["samples_changed"] == int((diff != 0).sum()) <= st["samples_used"]
+        assert st["capacity_bits"] == capacity_bits(a, sel, opts.bits)
+    # a payload ending mid-sample leaves the remaining bits of that sample alone
+    a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
+    data, st = hide(a, Selection("ch0"), ExtractOptions(bits=[0, 1, 2]), b"\xff")
+    b = load_bytes(data, "x.wav")
+    assert st["samples_used"] == 3 and (a.raw[2, 0] ^ b.raw[2, 0]) & 0b100 == 0
+    assert np.array_equal(a.raw[3:], b.raw[3:])
+
+
+def test_hide_capacity_and_errors():
+    import pytest
+
+    from wsteg.embed import capacity_bits, hide
+    a = load_file(os.path.join(TMP, "demo_mono24.wav"))
+    sel = Selection("ch0", 0, 80)
+    assert capacity_bits(a, sel, [0]) == 80 and capacity_bits(a, sel, [0, 1]) == 160
+    hide(a, sel, ExtractOptions(bits=[0]), b"0123456789")  # exactly full
+    with pytest.raises(ValueError, match="needs 88 bits"):
+        hide(a, sel, ExtractOptions(bits=[0]), b"0123456789A")
+    with pytest.raises(ValueError, match="twice"):
+        hide(a, sel, ExtractOptions(bits=[0, 0]), b"x")
+    with pytest.raises(ValueError, match="out of range"):
+        hide(a, sel, ExtractOptions(bits=[24]), b"x")

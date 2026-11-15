@@ -258,6 +258,36 @@ def _decode_raw(data: bytes, offset: int, nbytes: int, width: int) -> np.ndarray
     return np.frombuffer(data, dtype=dt, count=nbytes // width, offset=offset).astype(RAW_DTYPES[width])
 
 
+def _encode_raw(raw: np.ndarray, width: int) -> bytes:
+    flat = np.ascontiguousarray(raw).reshape(-1)
+    if width == 3:
+        v = flat.astype(np.uint32)
+        return np.stack([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF], axis=1).astype(np.uint8).tobytes()
+    return flat.astype(np.dtype(RAW_DTYPES[width]).newbyteorder("<")).tobytes()
+
+
+def with_samples(audio: Audio, raw: np.ndarray) -> bytes:
+    """File bytes for `audio` with its samples replaced by `raw` (same shape).
+
+    For a WAV source only the sample bytes change: header, other chunks, stray and
+    trailing bytes stay byte-identical. Other sources (decoded through ffmpeg) are
+    written as a new plain WAV file.
+    """
+    if raw.shape != audio.raw.shape:
+        raise ValueError("sample array shape differs from the file's")
+    body = _encode_raw(raw, audio.sample_width)
+    if audio.source == "wav":
+        out = bytearray(audio.original)
+        out[audio.data_offset:audio.data_offset + len(body)] = body
+        return bytes(out)
+    block = audio.channels * audio.sample_width
+    fmt = struct.pack("<HHIIHH", 3 if audio.is_float else 1, audio.channels, audio.sample_rate,
+                      audio.sample_rate * block, block, audio.bits_per_sample)
+    riff = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    riff += b"data" + struct.pack("<I", len(body)) + body + (b"\0" if len(body) & 1 else b"")
+    return b"RIFF" + struct.pack("<I", len(riff)) + riff
+
+
 def decode_with_ffmpeg(data: bytes, name: str) -> Audio:
     """Fallback for non-WAV input (FLAC, MP3, OGG...): decode to WAV via ffmpeg.
 

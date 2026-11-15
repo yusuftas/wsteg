@@ -51,6 +51,18 @@ def source_stream(audio: Audio, source: str) -> np.ndarray:
     return audio.raw[:, ch]
 
 
+def stream_length(audio: Audio, source: str) -> int:
+    return audio.frames * (audio.channels if source in ("interleaved", "sequential") else 1)
+
+
+def selected_count(stream_len: int, sel: Selection) -> int:
+    """Number of samples `select` yields from a source stream of `stream_len` samples."""
+    end = stream_len if sel.end is None else min(stream_len, sel.end)
+    n = max(0, end - sel.start)
+    take = min(sel.take, sel.step)
+    return n // sel.step * take + min(take, n % sel.step)
+
+
 def select(audio: Audio, sel: Selection) -> np.ndarray:
     s = source_stream(audio, sel.source)[sel.start:sel.end]
     if sel.step > 1:

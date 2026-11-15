@@ -78,11 +78,25 @@ with one click).
 - Result: flag-pattern search, magic bytes (also at later offsets), entropy, printable
   ratio and a length-prefix hint. Views: hex, text, bits and strings. Save as `.bin`.
 
+**Hide** (writes a payload into a copy of the loaded file)
+- Data: a file of any type, or a typed text such as a flag (stored as UTF-8).
+- Uses the shared *Samples* selection (source, start/end, `take` of every `step`, reverse)
+  and the same bit choices as Extract: which bits, in which order, MSB-first or LSB-first
+  packing, optional inversion.
+- A live capacity check shows how many bits the data needs and how many the selection
+  holds. Saving is disabled until the data fits.
+- *Hide and save as…* writes a new WAV. Only the chosen bits of the used samples change:
+  the header, other chunks and trailing bytes are kept byte for byte, and the loaded file
+  is never modified. The result is read back and verified, and the matching
+  `wsteg extract` command is shown.
+- No length or end marker is stored. Whoever extracts gets your data followed by the
+  cover's own bits, as in a typical CTF challenge.
+
 Bit numbering: **bit 0 = LSB** of the stored sample container (8-bit WAV is unsigned,
 16/24/32-bit are two's complement as stored, float is the raw IEEE bit pattern).
 Non-WAV input (FLAC, MP3, OGG…) is decoded through `ffmpeg` when it is on PATH.
 
-Shortcuts: Ctrl+O open, Ctrl+W close file, Ctrl+1…4 switch tabs, Space play/pause.
+Shortcuts: Ctrl+O open, Ctrl+W close file, Ctrl+1…5 switch tabs, Space play/pause.
 
 ## CLI
 
@@ -90,6 +104,8 @@ Shortcuts: Ctrl+O open, Ctrl+W close file, Ctrl+1…4 switch tabs, Space play/pa
 wsteg info file.wav
 wsteg extract file.wav --source ch1 --step 2 --bits 1,0 --pack msb -o out.bin
 wsteg extract file.wav --source interleaved --start 1 --step 4 --bits 0 --max-bytes 200
+wsteg hide cover.wav secret.zip -o out.wav --source ch1 --step 2 --bits 1,0 --pack msb
+wsteg hide cover.wav --text 'flag{...}' -o out.wav
 ```
 (`python -m wsteg …` from source.)
 
@@ -122,6 +138,7 @@ python -m pytest tests
 wsteg/wavio.py      WAV/RIFF parser that keeps raw sample bits (+ ffmpeg fallback)
 wsteg/analysis.py   spectrogram (max-pooled STFT), waveform, bit statistics
 wsteg/extract.py    sample selection, bit extraction, payload detection
+wsteg/embed.py      hiding a payload in sample bits (the inverse of extract)
 wsteg/gui/          Qt desktop app (one module per tab)
 packaging/          PyInstaller spec, entry points, icons
 scripts/            build.py, make_icon.py
