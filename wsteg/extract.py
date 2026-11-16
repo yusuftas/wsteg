@@ -139,6 +139,12 @@ def extract(audio: Audio, sel: Selection, opts: ExtractOptions) -> tuple[bytes, 
     return pack_bits(bs, opts.pack), bs
 
 
+# combination run limits, shared by the GUI and the CLI
+COMBO_WARN = 100_000  # ask (GUI) / warn with a time estimate (CLI) above this many
+COMBO_MAX = 3_000_000  # refuse above this
+COMBO_RATE = 10_000  # rough combinations per second, for the time estimate
+
+
 def _sources(channels: int) -> list[str]:
     return [f"ch{i}" for i in range(channels)] + (["interleaved"] if channels > 1 else [])
 
@@ -194,18 +200,17 @@ def try_combinations(audio: Audio, sel: Selection, opts: ExtractOptions, head_by
 
     The sample range (start/end/step/take/reverse), inversion and max_bytes come
     from `sel` / `opts`; source, bit list and packing are varied (see `bit_lists`
-    for what `max_bits` adds). Rows with a flag come first, then file signatures,
-    then the most printable previews. `keep` limits the result to the best rows.
+    for what `max_bits` adds). Rows starting with a file signature come first, then
+    rows starting with text (`text_start`, see `TEXT_START_RUN`), then the longest run
+    of printable text in the decoded head (`text_run`), then the most printable
+    previews. `keep` limits the result to the best rows.
     """
     limit = min(head_bytes, opts.max_bytes) if opts.max_bytes else head_bytes
     lists = bit_lists(opts.bits, max_bits)
-    printable = np.zeros(256, dtype=bool)
-    printable[32:127] = True
-    printable[[9, 10, 13]] = True
     rows, order = [], 0
 
     def rank(r):
-        return (not r["flags"], not r["magic"], -r["printable"], r["order"])
+        return (not r["magic"], not r["text_start"], -r["text_run"], -r["printable"], r["order"])
 
     for src in _sources(audio.channels):
         samples = select(audio, replace(sel, source=src))[:limit * 8]
@@ -222,12 +227,16 @@ def try_combinations(audio: Audio, sel: Selection, opts: ExtractOptions, head_by
             for pack in ("msb", "lsb"):
                 data = pack_bits(stream, pack)
                 head = data[:preview]
+                mask = PRINTABLE[np.frombuffer(data, np.uint8)]
+                run, at = longest_run(mask)
                 rows.append({
                     "source": src, "bits": bits, "pack": pack, "head": head, "bytes": len(data),
-                    "flags": [m.group().decode("latin-1") for m in FLAG_RE.finditer(data)][:50],
                     "magic": [desc for sig, desc in MAGICS if data.startswith(sig)],
                     "magic_later": _magic_later(data),
-                    "printable": float(printable[np.frombuffer(head, np.uint8)].mean()) if head else 0.0,
+                    "text_run": run, "text_at": at, "text": data[at:at + min(run, preview)],
+                    "text_start": bool(run >= TEXT_START_RUN and at <= TEXT_START_AT and
+                                       WORDISH[np.frombuffer(data[at:at + min(run, 256)], np.uint8)].mean() >= TEXT_WORDISH),
+                    "printable": float(mask[:len(head)].mean()) if head else 0.0,
                     "order": order,
                 })
                 order += 1
@@ -267,8 +276,29 @@ MAGICS: list[tuple[bytes, str]] = [
     (b"<?xml", "XML"), (b"<svg", "SVG"), (b"<!DOCTYPE html", "HTML"),
 ]
 
-FLAG_RE = re.compile(rb"[A-Za-z0-9_\-]{2,20}\{[ -|~]{2,200}?\}")
 STRINGS_RE = re.compile(rb"[ -~\t]{6,}")
+
+# Text that starts the stream is what a hidden payload looks like; long printable runs in
+# the middle of a stream are common in quiet audio and usually noise.
+TEXT_START_RUN = 16  # at least this many printable characters ...
+TEXT_START_AT = 8  # ... starting within this many bytes (room for a length prefix)
+TEXT_WORDISH = 0.85  # ... and mostly letters, digits, whitespace and '_' (random printable bytes: ~68%)
+
+PRINTABLE = np.zeros(256, dtype=bool)  # printable ASCII plus tab, LF and CR
+PRINTABLE[32:127] = True
+PRINTABLE[[9, 10, 13]] = True
+WORDISH = np.zeros(256, dtype=bool)
+WORDISH[[*b"0123456789_ \t\r\n", *range(65, 91), *range(97, 123)]] = True
+
+
+def longest_run(mask: np.ndarray) -> tuple[int, int]:
+    """(length, start) of the longest run of True in a boolean array (the first one on a tie)."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask.astype(np.int8), [0]))))
+    if not len(edges):
+        return 0, 0
+    lengths = edges[1::2] - edges[::2]
+    i = int(lengths.argmax())
+    return int(lengths[i]), int(edges[::2][i])
 
 
 def _magic_later(data: bytes) -> list[dict]:
@@ -289,7 +319,6 @@ def analyze_payload(data: bytes) -> dict:
     # Magic bytes appearing later (payload with a junk prefix / length header).
     later = _magic_later(data)
     printable = sum(1 for c in head if 32 <= c < 127 or c in (9, 10, 13)) / max(1, len(head))
-    flags = [m.group().decode("latin-1") for m in FLAG_RE.finditer(data[: 8 << 20])][:50]
     strings = [m.group().decode("latin-1") for m in STRINGS_RE.finditer(data[: 1 << 20])][:200]
     # Shannon entropy of the first 64 KiB.
     sample = np.frombuffer(data[:65536], dtype=np.uint8)
@@ -310,7 +339,6 @@ def analyze_payload(data: bytes) -> dict:
         "magic_later": later,
         "printable_ratio": printable,
         "entropy": ent,
-        "flags": flags,
         "strings": strings,
         "length_prefix": length_hints,
     }

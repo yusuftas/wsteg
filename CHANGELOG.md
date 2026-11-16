@@ -6,6 +6,22 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `wsteg extract -a`: *Try combinations* from the command line, similar to `zsteg -a`.
+  Candidate bits are 0..`--upto N` (default 3) or an explicit `--bits` set. Ranked rows
+  are printed with the `wsteg extract` command for each hit, or as JSON with `--json`.
+- Coloured `extract -a` output (zsteg-style): file signatures and text at the start of the
+  output stand out, noise is dimmed. `--color auto|always|never`, `NO_COLOR` is respected.
+
+### Changed
+- *Try combinations* ranks by file signature, then text at the start of the output, then
+  the longest run of printable text in the first 4 KiB (a new *Text run* column), then
+  printable ratio. Rows starting with text are highlighted like file signatures.
+
+### Removed
+- The flag-pattern search (`xxx{...}`) in Extract and *Try combinations*. It matched random
+  bytes too often and ranked noise above real payloads; the text itself is shown anyway.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added

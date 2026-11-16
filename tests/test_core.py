@@ -11,7 +11,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 import make_samples  # noqa: E402
 
 from wsteg import analysis  # noqa: E402
-from wsteg.extract import ExtractOptions, Selection, extract, select, selected_index, try_combinations  # noqa: E402
+from wsteg.extract import (  # noqa: E402
+    ExtractOptions,
+    Selection,
+    analyze_payload,
+    extract,
+    longest_run,
+    select,
+    selected_index,
+    try_combinations,
+)
 from wsteg.wavio import load_file  # noqa: E402
 
 TMP = tempfile.mkdtemp()
@@ -63,7 +72,8 @@ def test_try_combinations():
     rows = try_combinations(a, Selection("ch0", 0, None, 2, 1), ExtractOptions(bits=[0, 1], pack="lsb"))
     assert len(rows) == 12 and len({(r["source"], tuple(r["bits"]), r["pack"]) for r in rows}) == 12
     assert (rows[0]["source"], rows[0]["bits"], rows[0]["pack"]) == ("ch1", [1, 0], "msb")
-    assert rows[0]["head"].startswith(make_samples.PAYLOAD_STEREO[:32]) and rows[0]["flags"]
+    assert rows[0]["head"].startswith(make_samples.PAYLOAD_STEREO[:32])
+    assert rows[0]["text_run"] >= len(make_samples.PAYLOAD_STEREO) > rows[1]["text_run"]
     m = load_file(os.path.join(TMP, "demo_mono24.wav"))
     rows = try_combinations(m, Selection("ch0", 1000, None, 3, 1), ExtractOptions(bits=[0]))
     assert [(r["source"], r["pack"]) for r in rows] == [("ch0", "lsb"), ("ch0", "msb")]
@@ -85,7 +95,7 @@ def test_try_combinations_bit_subsets():
     sel, opts = Selection("ch0", 0, None, 2, 1), ExtractOptions(bits=[3, 2, 1, 0], invert=False)
     rows = try_combinations(a, sel, opts, max_bits=2)
     assert len(rows) == 3 * (4 + 6 * 2) * 2
-    assert (rows[0]["source"], rows[0]["bits"], rows[0]["pack"]) == ("ch1", [1, 0], "msb") and rows[0]["flags"]
+    assert (rows[0]["source"], rows[0]["bits"], rows[0]["pack"]) == ("ch1", [1, 0], "msb")
     assert try_combinations(a, sel, opts, max_bits=2, keep=5) == rows[:5]
     for inv in (False, True):  # every preview equals what a full extraction starts with
         o = replace(opts, bits=[2, 0, 1], invert=inv)
@@ -175,3 +185,64 @@ def test_hide_capacity_and_errors():
         hide(a, sel, ExtractOptions(bits=[0, 0]), b"x")
     with pytest.raises(ValueError, match="out of range"):
         hide(a, sel, ExtractOptions(bits=[24]), b"x")
+
+
+def test_cli_extract_try_all(capsys):
+    from wsteg.__main__ import main
+    f = os.path.join(TMP, "demo_stereo16.wav")
+    main(["extract", f, "-a", "--upto", "2", "--step", "2", "--keep", "5"])
+    out, err = capsys.readouterr()
+    lines = out.splitlines()[1:]  # after the header
+    assert lines[0].startswith("+ ch1") and "b1,0" in lines[0] and "flag{even_samples_bits_1_0}" in lines[0]
+    assert "\x1b[" not in out  # captured output isn't a terminal: no colour
+    assert lines[1].split("-> ")[1] == f"wsteg extract {f} --source ch1 --step 2 --bits 1,0 --pack msb -o out.bin"
+    assert sum("->" in line for line in lines) == 1  # only the top row: no file signatures here
+    assert "66 combinations tried" in err  # 3 sources x (3 + 3*2 + 2) bit lists x 2 packings
+
+    import json
+    main(["extract", os.path.join(TMP, "demo_mono24.wav"), "-a", "--bits", "1,0", "--start", "1000", "--step", "3",
+          "--json", "--keep", "1"])
+    (best,) = json.loads(capsys.readouterr().out)
+    assert (best["source"], best["bits"], best["pack"]) == ("ch0", [0], "lsb")
+    assert best["text_run"] >= len(make_samples.PAYLOAD_MONO)
+
+    import pytest
+    for bad in (["-a", "-o", "x.bin"], ["-a", "--upto", "1", "--bits", "0"], ["--upto", "1"]):
+        with pytest.raises(SystemExit):
+            main(["extract", f, *bad])
+    with pytest.raises(SystemExit, match="out of range"):
+        main(["extract", f, "-a", "--upto", "16"])
+
+    main(["extract", f, "-a", "--upto", "1", "--step", "2", "--keep", "3", "--color", "always"])
+    out = capsys.readouterr().out
+    assert "\x1b[32m+ ch1" in out and "\x1b[92mflag{even_samples_bits_1_0}" in out and out.count("\x1b[36m") == 1
+
+
+def test_text_start_and_colour_switch(monkeypatch):
+    import io
+
+    from wsteg.term import Painter, use_color
+    a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
+    rows = try_combinations(a, Selection("ch0", 0, None, 2, 1), ExtractOptions(bits=[1, 0]), max_bits=2)
+    starts = [r for r in rows if r["text_start"]]
+    assert [(r["source"], r["bits"], r["pack"]) for r in starts][:1] == [("ch1", [1, 0], "msb")]
+    assert rows[0] is starts[0] and rows[0]["text_at"] == 0 and rows[0]["text"].startswith(make_samples.PAYLOAD_STEREO)
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    assert use_color("auto", Tty()) and not use_color("auto", io.StringIO()) and not use_color("never", Tty())
+    assert use_color("always", io.StringIO())
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not use_color("auto", Tty())
+    assert Painter(False)("x", "red") == "x" and Painter(True)("x", "bold", "red") == "\x1b[1;31mx\x1b[0m"
+
+
+def test_longest_run_and_no_flag_search():
+    assert longest_run(np.array([], bool)) == (0, 0)
+    assert longest_run(np.zeros(4, bool)) == (0, 0)
+    assert longest_run(np.array([0, 1, 1, 0, 1, 1, 1, 0], bool)) == (3, 4)
+    assert longest_run(np.ones(5, bool)) == (5, 0)
+    assert "flags" not in analyze_payload(b"flag{x}")

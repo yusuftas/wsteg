@@ -70,8 +70,9 @@ with one click).
   previews the first bytes of every channel / all-interleaved × selection of the chosen
   bits × bit order (high→low, low→high) × MSB/LSB packing combination. Choosing b2, b1
   and b0 tests each bit alone, every pair and all three, so you don't need to know which
-  bits carry the data. Rows with a flag or a file signature are listed first, and the
-  best 300 are shown.
+  bits carry the data. Rows starting with a file signature are listed first, then rows
+  starting with text (highlighted green with them), then the longest run of printable text
+  in the first 4 KiB (the *Text run* column). The best 300 are shown.
 - The number of combinations doubles with every extra chosen bit. Runs above 100,000
   ask for confirmation with a time estimate, and runs above 3,000,000 are refused.
 - Click a combination to open its settings and run it in full, with the output shown
@@ -79,7 +80,7 @@ with one click).
   bit list emitted **in the listed order** (`1,0` vs `0,1`), MSB-first or LSB-first
   packing, inversion and a max-bytes limit. *Extract* (Ctrl+Enter once the settings are
   open) reruns after a change.
-- Result: flag-pattern search, magic bytes (also at later offsets), entropy, printable
+- Result: magic bytes (also at later offsets), entropy, printable
   ratio and a length-prefix hint. Views: hex, text, bits and strings. Save as `.bin`.
 
 **Hide** (writes a payload into a copy of the loaded file)
@@ -112,6 +113,28 @@ wsteg hide cover.wav secret.zip -o out.wav --source ch1 --step 2 --bits 1,0 --pa
 wsteg hide cover.wav --text 'flag{...}' -o out.wav
 ```
 (`python -m wsteg …` from source.)
+
+`extract -a` is the CLI version of *Try combinations*, similar to `zsteg -a`. It keeps the
+sample range (`--start/--end/--step/--take/--reverse`, `--invert`, `--max-bytes`) and tries
+every source × every selection of the candidate bits × bit order × MSB/LSB packing, ranked
+as in the GUI. The best rows are printed in colour, like zsteg, so the rows worth a look stand
+out:
+- `*` bold green: the output starts with a file signature;
+- `+` green: the output starts with text (16+ printable characters within the first 8 bytes,
+  mostly letters, digits, whitespace and `_`);
+- dimmed: probably noise. Long text runs further in are still shown as `text @ 0x…` in yellow.
+
+Inside each preview, printable runs of 6+ characters are bright and the rest is dimmed. The
+top row and every `*` row are followed by the `wsteg extract` command that runs them in full.
+Colour is on when printing to a terminal; use `--color always|never` or set `NO_COLOR`.
+```bash
+wsteg extract file.wav -a                    # candidate bits 0..3 (the default)
+wsteg extract file.wav -a --upto 7 --step 2  # bits 0..7 of every other sample
+wsteg extract file.wav -a --bits 7,1,0       # an explicit set of candidate bits
+wsteg extract file.wav -a --keep 0 --json    # every row, as JSON
+```
+The number of combinations doubles with every extra bit (`--upto 12` on stereo is about
+98k and takes a few seconds). Runs above 3,000,000 are refused.
 
 ## Building the standalone app
 

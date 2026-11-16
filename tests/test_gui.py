@@ -88,7 +88,7 @@ def test_extract_finds_flag(window):
     w.extract.run()
     w.pump(1.5)
     assert w.extract.result["data"].startswith(make_samples.PAYLOAD_STEREO)
-    assert make_samples.PAYLOAD_STEREO.decode() in w.extract.summary.text()
+    assert w.extract.text_v.toPlainText().startswith(make_samples.PAYLOAD_STEREO.decode())
 
 
 def test_extract_combinations(window):
@@ -110,7 +110,8 @@ def test_extract_combinations(window):
     assert len(ex.combos) == ex.combo_table.rowCount() == ex.combination_count() == 3 * 4 * 2
     best = ex.combos[0]
     assert (best["source"], best["bits"], best["pack"]) == ("ch1", [1, 0], "msb")
-    assert make_samples.PAYLOAD_STEREO.decode() in ex.combo_table.item(0, 3).text()
+    assert ex.combo_table.item(0, 6).text().startswith(make_samples.PAYLOAD_STEREO.decode())
+    assert int(ex.combo_table.item(0, 4).text()) >= len(make_samples.PAYLOAD_STEREO)  # Text run
     ex.combo_table.setCurrentCell(0, 0)  # picking a row opens its settings and runs it in full
     w.pump(1.5)
     assert ex.settings.isVisible() and ex.views.isVisible() and ex.combo_table.isVisible()

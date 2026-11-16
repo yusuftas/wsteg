@@ -22,17 +22,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..extract import ExtractOptions, analyze_payload, count_combinations, extract, try_combinations
+from ..extract import (
+    COMBO_MAX,
+    COMBO_RATE,
+    COMBO_WARN,
+    ExtractOptions,
+    analyze_payload,
+    count_combinations,
+    extract,
+    try_combinations,
+)
 from .bitpicker import BitPicker
 from .common import T, badge, code_view, hexdump, hint, labeled, mono_font, panel, row
 from .selection import SelectionBar, channel_name
 
 HEX_PREVIEW = 64 * 1024
-COMBO_COLS = ["Source", "Bits", "Pack", "Findings", "Printable", "Text", "Hex"]
+COMBO_COLS = ["Source", "Bits", "Pack", "Findings", "Text run", "Printable", "Text", "Hex"]
 COMBO_KEEP = 300  # best rows listed after a run
-COMBO_WARN = 100_000  # ask before trying more than this many
-COMBO_MAX = 3_000_000  # refuse above this
-COMBO_RATE = 10_000  # rough combinations per second, for the time estimate
 START_HINT = ("Pick the candidate bits above and press <b>Try combinations</b> (Ctrl+Enter) to preview every source, "
               "selection of those bits, bit order and packing. Click a result to open its settings and the full output.")
 
@@ -235,7 +241,6 @@ class ExtractTab(QWidget):
         self.save.setEnabled(bool(r["data"]))
         a, data = r["analysis"], r["data"]
         parts = [badge(f"{r['total_bits']:,} bits → {len(data):,} bytes")]
-        parts += [badge(f"⚑ {f}", "good") for f in a["flags"]]
         parts += [badge(f"file: {m}", "good") for m in a["magic"]]
         parts += [badge(f"{m['type']} @ 0x{m['offset']:x}", "warn") for m in a["magic_later"][:5]]
         parts.append(badge(f"printable {a['printable_ratio'] * 100:.0f}%", "good" if a["printable_ratio"] > 0.9 else ""))
@@ -251,8 +256,6 @@ class ExtractTab(QWidget):
         self.bits_v.setPlainText("\n".join(" ".join(groups[i:i + 8]) for i in range(0, len(groups), 8)) +
                                  (f"\n… first {len(bits):,} of {r['total_bits']:,} bits" if r["total_bits"] > len(bits) else ""))
         self.str_v.setPlainText("\n".join(a["strings"]) or "(no printable runs ≥ 6 chars)")
-        if a["flags"]:
-            self.status.emit(f"flag found: {a['flags'][0]}")
 
     # ---------------------------------------------------------------- combinations
     def _source_name(self, src):
@@ -327,12 +330,13 @@ class ExtractTab(QWidget):
         t.setRowCount(len(rows))
         hits = 0
         for i, r in enumerate(rows):
-            found = [f"⚑ {f}" for f in r["flags"][:3]] + [f"file: {m}" for m in r["magic"]]
+            found = [f"file: {m}" for m in r["magic"]]
             found += [f"{m['type']} @ 0x{m['offset']:x}" for m in r["magic_later"][:2]]
-            hit = bool(r["flags"] or r["magic"])
+            hit = bool(r["magic"] or r["text_start"])
             hits += hit
             cells = [self._source_name(r["source"]), ",".join(map(str, r["bits"])), r["pack"].upper() + " first",
-                     "  ".join(found), f"{r['printable'] * 100:.0f}%", _printable(r["head"]), r["head"].hex(" ")]
+                     "  ".join(found), f"{r['text_run']:,}", f"{r['printable'] * 100:.0f}%", _printable(r["head"]),
+                     r["head"].hex(" ")]
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(text)
                 if hit:
@@ -352,18 +356,15 @@ class ExtractTab(QWidget):
             f"{total:,} combinations of source × {'bit selection × ' if len(self.combo_key[5]) > 1 else ''}bit order × "
             f"packing{f' (the best {len(rows)} are listed)' if total > len(rows) else ''}, {rng}{pick}"
             f"{', reversed' if s.reverse else ''}{', inverted' if self.invert.isChecked() else ''}. "
-            f"First {head} bytes shown; flags and file signatures are searched in the first "
+            f"First {head} bytes shown; file signatures and the longest text run are searched in the first "
             f"{max((r['bytes'] for r in rows), default=0):,} bytes. Best matches first. "
             "Click a row to open its settings and run that extraction in full.")
         self.combo_info.setTextFormat(Qt.RichText)
         self.combo_info.show()
         self._explain()
         self.summary.setText(badge(f"{total:,} combinations tried") +
-                             badge(f"{hits} with a flag or file signature" if hits else "no flag or file signature",
+                             badge(f"{hits} starting with a file signature or text" if hits else "none starts with a file signature or text",
                                    "good" if hits else ""))
-        best = next((r for r in rows if r["flags"]), None)
-        if best:
-            self.status.emit(f"flag found: {best['flags'][0]}")
 
     def _pick(self, i):
         # a click fires both cellPressed and currentCellChanged: apply once, after the event
