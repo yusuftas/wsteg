@@ -6,6 +6,8 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
 ### Added
 - `wsteg extract -a`: *Try combinations* from the command line, similar to `zsteg -a`.
   Candidate bits are 0..`--upto N` (default 3) or an explicit `--bits` set. Ranked rows
