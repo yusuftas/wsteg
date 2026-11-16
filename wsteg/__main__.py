@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import subprocess
 import sys
 
 from .embed import capacity_bits, hide
@@ -160,7 +161,10 @@ def _extract_cmd(a, r) -> str:
         cmd.append("--invert")
     if a.max_bytes:
         cmd += ["--max-bytes", str(a.max_bytes)]
-    return " ".join(shlex.quote(c) for c in cmd) + " -o out.bin"
+    cmd += ["-o", "out.bin"]
+    if sys.platform == "win32":  # cmd.exe and PowerShell both take double quotes; shlex's single quotes break cmd.exe
+        return subprocess.list2cmdline(cmd)
+    return " ".join(shlex.quote(c) for c in cmd)
 
 
 def _try_all(parser, a, audio, sel):
