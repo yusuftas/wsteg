@@ -6,6 +6,8 @@ All notable changes to wsteg are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
 ### Added
 - **Hide** tab: write a file or a typed text into chosen sample bits and save the result
   as a new WAV. It uses the same sample selection, bit list, bit order, MSB/LSB packing
