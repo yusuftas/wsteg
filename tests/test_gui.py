@@ -106,7 +106,8 @@ def test_extract_combinations(window):
     ex._shortcut()  # Ctrl+Enter tries the combinations while the settings are closed
     w.pump(1.5)
     assert ex.combo_table.isVisible() and not ex.settings.isVisible() and not ex.views.isVisible()
-    assert len(ex.combos) == ex.combo_table.rowCount() == 3 * 2 * 2  # L, R, interleaved x order x pack
+    # L, R, interleaved x (b0, b1, b1+b0 in both orders) x pack
+    assert len(ex.combos) == ex.combo_table.rowCount() == ex.combination_count() == 3 * 4 * 2
     best = ex.combos[0]
     assert (best["source"], best["bits"], best["pack"]) == ("ch1", [1, 0], "msb")
     assert make_samples.PAYLOAD_STEREO.decode() in ex.combo_table.item(0, 3).text()
@@ -117,8 +118,37 @@ def test_extract_combinations(window):
     w.sel.update(start=4)
     assert "again" in ex.combo_info.text()
     w.sel.update(start=0)
-    assert w.sel.sel.source == "ch1" and ex.bits() == [1, 0] and ex.pack.currentData() == "msb"
+    # a wider candidate set: every selection of b3..b0 is tried
+    ex.picker.set_bits([3, 2, 1, 0])
+    assert "again" in ex.combo_info.text()
+    w.sel.update(source="ch0")
+    ex.run_combinations()
+    w.pump(1.5)
+    best = ex.combos[0]
+    assert len(ex.combos) == ex.combination_count() == 3 * (4 + 11 * 2) * 2
+    assert (best["source"], best["bits"]) == ("ch1", [1, 0]) and "bit selection" in ex.combo_info.text()
+    ex.apply_combination(0)
+    w.pump(1.5)
+    assert ex.bits() == [1, 0] and "again" not in ex.combo_info.text()  # narrowed chips, table still valid
     assert ex.result["data"].startswith(make_samples.PAYLOAD_STEREO)
+    # a huge run asks first, and an absurd one is refused
+    asked = []
+    ex.confirm_big = lambda n: asked.append(n) or False
+    ex.picker.set_bits(list(range(15)))
+    assert 100_000 < ex.combination_count() < 3_000_000
+    ex.run_combinations()
+    assert asked == [ex.combination_count()] and ex.brute.isEnabled()
+    ex.picker.set_bits(list(range(16)))
+    ex.picker.order.setCurrentIndex(ex.picker.order.findData("custom"))
+    w.sel.update(source="interleaved")
+    w.audio.channels, real = 40, w.audio.channels  # pretend: 41 sources push it over the limit
+    try:
+        ex.run_combinations()
+    finally:
+        w.audio.channels = real
+    assert "too many" in ex.summary.text() and len(asked) == 1 and ex.brute.isEnabled()
+    w.sel.update(source="ch1")
+    ex.picker.set_bits([1, 0])
 
 
 def test_bitplanes(window):

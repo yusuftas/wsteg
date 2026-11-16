@@ -2,6 +2,8 @@
 """Sample selection, bit extraction and payload detection."""
 from __future__ import annotations
 
+import itertools
+import math
 import re
 from dataclasses import asdict, dataclass, field, replace
 
@@ -137,39 +139,103 @@ def extract(audio: Audio, sel: Selection, opts: ExtractOptions) -> tuple[bytes, 
     return pack_bits(bs, opts.pack), bs
 
 
-def combinations(channels: int, bits: list[int]) -> list[tuple[str, list[int], str]]:
-    """Every (source, bit order, pack) worth trying for a set of chosen bits:
-    each channel plus all channels interleaved, the bits high->low, low->high
-    and in the order given, packed MSB- and LSB-first."""
-    sources = [f"ch{i}" for i in range(channels)] + (["interleaved"] if channels > 1 else [])
-    orders = []
-    for o in (sorted(set(bits), reverse=True), sorted(set(bits)), list(bits)):
-        if o and o not in orders:
-            orders.append(o)
-    return [(src, o, pack) for src in sources for o in orders for pack in ("msb", "lsb")]
+def _sources(channels: int) -> list[str]:
+    return [f"ch{i}" for i in range(channels)] + (["interleaved"] if channels > 1 else [])
 
 
-def try_combinations(audio: Audio, sel: Selection, opts: ExtractOptions, head_bytes=4096, preview=64) -> list[dict]:
+def bit_lists(bits: list[int], max_bits: int | None = None) -> list[list[int]]:
+    """Bit lists worth trying for the chosen bits.
+
+    Without `max_bits`: the chosen bits high->low, low->high and in the order given.
+    With `max_bits`: every subset of the chosen bits holding 1..max_bits bits, each
+    high->low and low->high, smallest subsets first (plus the order given, if it is
+    neither and is short enough).
+    """
+    pool = sorted(set(bits))
+    if not max_bits:
+        sets = [tuple(pool)] if pool else []
+    else:
+        sets = [c for k in range(1, min(max_bits, len(pool)) + 1) for c in itertools.combinations(pool, k)]
+    out = []
+    for c in sets:
+        out.append(list(c[::-1]))
+        if len(c) > 1:
+            out.append(list(c))
+    given = list(bits)
+    if given and given not in out and (not max_bits or (len(set(given)) == len(given) <= max_bits)):
+        out.append(given)
+    return out
+
+
+def count_combinations(channels: int, bits: list[int], max_bits: int | None = None) -> int:
+    """len(combinations(...)) without building the list."""
+    n = len(set(bits))
+    if not max_bits:
+        lists = len(bit_lists(bits))
+    else:
+        top = min(max_bits, n)
+        lists = sum(math.comb(n, k) * (2 if k > 1 else 1) for k in range(1, top + 1))
+        given = list(bits)
+        if (len(given) == n and len(given) <= max_bits and given != sorted(given)
+                and given != sorted(given, reverse=True)):
+            lists += 1
+    return len(_sources(channels)) * lists * 2
+
+
+def combinations(channels: int, bits: list[int], max_bits: int | None = None) -> list[tuple[str, list[int], str]]:
+    """Every (source, bit list, pack) to try: each channel plus all channels
+    interleaved x `bit_lists` x MSB- and LSB-first packing."""
+    return [(src, o, pack) for src in _sources(channels) for o in bit_lists(bits, max_bits) for pack in ("msb", "lsb")]
+
+
+def try_combinations(audio: Audio, sel: Selection, opts: ExtractOptions, head_bytes=4096, preview=64,
+                     max_bits: int | None = None, keep: int | None = None) -> list[dict]:
     """Extract only the first `head_bytes` of every combination and rank them.
 
     The sample range (start/end/step/take/reverse), inversion and max_bytes come
-    from `sel` / `opts`; source, bit order and packing are varied. Rows with a
-    flag come first, then file signatures, then the most printable previews.
+    from `sel` / `opts`; source, bit list and packing are varied (see `bit_lists`
+    for what `max_bits` adds). Rows with a flag come first, then file signatures,
+    then the most printable previews. `keep` limits the result to the best rows.
     """
     limit = min(head_bytes, opts.max_bytes) if opts.max_bytes else head_bytes
-    rows = []
-    for i, (src, bits, pack) in enumerate(combinations(audio.channels, opts.bits)):
-        data, _ = extract(audio, replace(sel, source=src), replace(opts, bits=bits, pack=pack, max_bytes=limit))
-        a = analyze_payload(data)
-        head = data[:preview]
-        rows.append({
-            "source": src, "bits": bits, "pack": pack, "head": head, "bytes": len(data),
-            "flags": a["flags"], "magic": a["magic"], "magic_later": a["magic_later"],
-            "printable": sum(1 for c in head if 32 <= c < 127 or c in (9, 10, 13)) / max(1, len(head)),
-            "order": i,
-        })
-    rows.sort(key=lambda r: (not r["flags"], not r["magic"], -r["printable"], r["order"]))
-    return rows
+    lists = bit_lists(opts.bits, max_bits)
+    printable = np.zeros(256, dtype=bool)
+    printable[32:127] = True
+    printable[[9, 10, 13]] = True
+    rows, order = [], 0
+
+    def rank(r):
+        return (not r["flags"], not r["magic"], -r["printable"], r["order"])
+
+    for src in _sources(audio.channels):
+        samples = select(audio, replace(sel, source=src))[:limit * 8]
+        one = samples.dtype.type(1)
+        planes = {b: ((samples >> samples.dtype.type(b)) & one).astype(np.uint8)
+                  for b in {b for o in lists for b in o}}
+        for bits in lists:
+            k = len(bits)
+            n = -(-limit * 8 // k)
+            stream = planes[bits[0]][:n] if k == 1 else np.stack([planes[b][:n] for b in bits], axis=1).reshape(-1)
+            stream = stream[:limit * 8]
+            if opts.invert:
+                stream = stream ^ 1
+            for pack in ("msb", "lsb"):
+                data = pack_bits(stream, pack)
+                head = data[:preview]
+                rows.append({
+                    "source": src, "bits": bits, "pack": pack, "head": head, "bytes": len(data),
+                    "flags": [m.group().decode("latin-1") for m in FLAG_RE.finditer(data)][:50],
+                    "magic": [desc for sig, desc in MAGICS if data.startswith(sig)],
+                    "magic_later": _magic_later(data),
+                    "printable": float(printable[np.frombuffer(head, np.uint8)].mean()) if head else 0.0,
+                    "order": order,
+                })
+                order += 1
+            if keep and len(rows) > 4 * keep + 1000:  # bound memory on big runs
+                rows.sort(key=rank)
+                del rows[keep:]
+    rows.sort(key=rank)
+    return rows[:keep] if keep else rows
 
 
 # ---------------------------------------------------------------- detection
@@ -205,10 +271,8 @@ FLAG_RE = re.compile(rb"[A-Za-z0-9_\-]{2,20}\{[ -|~]{2,200}?\}")
 STRINGS_RE = re.compile(rb"[ -~\t]{6,}")
 
 
-def analyze_payload(data: bytes) -> dict:
-    head = data[:1024]
-    magic = [desc for sig, desc in MAGICS if data.startswith(sig)]
-    # Magic bytes appearing later (payload with a junk prefix / length header).
+def _magic_later(data: bytes) -> list[dict]:
+    """File signatures (4+ bytes) found after offset 0, nearest first."""
     later = []
     for sig, desc in MAGICS:
         if len(sig) < 4:
@@ -216,6 +280,14 @@ def analyze_payload(data: bytes) -> dict:
         i = data.find(sig, 1, 1 << 20)
         if i > 0:
             later.append({"offset": i, "type": desc})
+    return sorted(later, key=lambda x: x["offset"])[:20]
+
+
+def analyze_payload(data: bytes) -> dict:
+    head = data[:1024]
+    magic = [desc for sig, desc in MAGICS if data.startswith(sig)]
+    # Magic bytes appearing later (payload with a junk prefix / length header).
+    later = _magic_later(data)
     printable = sum(1 for c in head if 32 <= c < 127 or c in (9, 10, 13)) / max(1, len(head))
     flags = [m.group().decode("latin-1") for m in FLAG_RE.finditer(data[: 8 << 20])][:50]
     strings = [m.group().decode("latin-1") for m in STRINGS_RE.finditer(data[: 1 << 20])][:200]
@@ -235,7 +307,7 @@ def analyze_payload(data: bytes) -> dict:
                 length_hints.append({"endian": endian, "value": v})
     return {
         "magic": magic,
-        "magic_later": sorted(later, key=lambda x: x["offset"])[:20],
+        "magic_later": later,
         "printable_ratio": printable,
         "entropy": ent,
         "flags": flags,

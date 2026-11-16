@@ -69,6 +69,32 @@ def test_try_combinations():
     assert [(r["source"], r["pack"]) for r in rows] == [("ch0", "lsb"), ("ch0", "msb")]
 
 
+def test_try_combinations_bit_subsets():
+    from dataclasses import replace
+
+    from wsteg.extract import bit_lists, combinations, count_combinations
+    assert bit_lists([2, 0, 1], 2) == [[0], [1], [2], [1, 0], [0, 1], [2, 0], [0, 2], [2, 1], [1, 2]]
+    assert bit_lists([2, 0, 1], 3)[-3:] == [[2, 1, 0], [0, 1, 2], [2, 0, 1]]  # the order given comes last
+    assert bit_lists([1, 0]) == [[1, 0], [0, 1]] and bit_lists([3], 5) == [[3]]
+    for ch in (1, 2):
+        for bits in ([0], [1, 0], [2, 0, 1], [5, 3, 0, 9], list(range(7))):
+            for mb in (None, 1, 2, 3, 9):
+                assert count_combinations(ch, bits, mb) == len(combinations(ch, bits, mb)), (ch, bits, mb)
+    # the flag sits in bits 1,0 of ch1; found from a wider candidate set
+    a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
+    sel, opts = Selection("ch0", 0, None, 2, 1), ExtractOptions(bits=[3, 2, 1, 0], invert=False)
+    rows = try_combinations(a, sel, opts, max_bits=2)
+    assert len(rows) == 3 * (4 + 6 * 2) * 2
+    assert (rows[0]["source"], rows[0]["bits"], rows[0]["pack"]) == ("ch1", [1, 0], "msb") and rows[0]["flags"]
+    assert try_combinations(a, sel, opts, max_bits=2, keep=5) == rows[:5]
+    for inv in (False, True):  # every preview equals what a full extraction starts with
+        o = replace(opts, bits=[2, 0, 1], invert=inv)
+        for r in try_combinations(a, Selection("ch0", 3, 9000, 3, 2, True), o, max_bits=3):
+            want, _ = extract(a, Selection(r["source"], 3, 9000, 3, 2, True),
+                              replace(o, bits=r["bits"], pack=r["pack"], max_bytes=4096))
+            assert r["head"] == want[:64] and r["bytes"] == len(want)
+
+
 def test_bitstats_and_spectrogram():
     a = load_file(os.path.join(TMP, "demo_stereo16.wav"))
     st = analysis.bit_stats(select(a, Selection("ch1")), a.nbits, 64)

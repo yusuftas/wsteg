@@ -12,6 +12,13 @@ All notable changes to wsteg are listed here. The format follows
   and inversion as Extract, checks live that the data fits, and verifies the result by
   reading it back. Everything except the chosen bits stays byte-identical.
 - `wsteg hide` command-line counterpart.
+- Extract: *Try combinations* now also tries every selection of the chosen bits (each
+  bit alone, every pair, and so on), so the chosen bits act as candidates. Large runs
+  ask for confirmation, and the best 300 results are listed.
+
+### Changed
+- *Try combinations* is much faster: each bit plane is read once per source instead of
+  once per combination.
 
 ## [0.2.0] - 2026-11-13
 

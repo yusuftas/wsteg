@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -21,15 +22,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..extract import ExtractOptions, analyze_payload, extract, try_combinations
+from ..extract import ExtractOptions, analyze_payload, count_combinations, extract, try_combinations
 from .bitpicker import BitPicker
 from .common import T, badge, code_view, hexdump, hint, labeled, mono_font, panel, row
 from .selection import SelectionBar, channel_name
 
 HEX_PREVIEW = 64 * 1024
 COMBO_COLS = ["Source", "Bits", "Pack", "Findings", "Printable", "Text", "Hex"]
-START_HINT = ("Pick the bits above and press <b>Try combinations</b> (Ctrl+Enter) to preview every source, "
-              "bit order and packing. Click a result to open its settings and the full output.")
+COMBO_KEEP = 300  # best rows listed after a run
+COMBO_WARN = 100_000  # ask before trying more than this many
+COMBO_MAX = 3_000_000  # refuse above this
+COMBO_RATE = 10_000  # rough combinations per second, for the time estimate
+START_HINT = ("Pick the candidate bits above and press <b>Try combinations</b> (Ctrl+Enter) to preview every source, "
+              "selection of those bits, bit order and packing. Click a result to open its settings and the full output.")
 
 
 def _printable(data: bytes) -> str:
@@ -77,8 +82,9 @@ class ExtractTab(QWidget):
         self.save.setEnabled(False)
         self.brute = QPushButton("Try combinations")
         self.brute.setObjectName("primary")
-        self.brute.setToolTip("Keep the sample range and the chosen bits, and preview the start of the output for\n"
-                              "every channel / interleaved × bit order × MSB/LSB packing combination")
+        self.brute.setToolTip("Keep the sample range and preview the start of the output for every combination of\n"
+                              "channel / interleaved × selection of the chosen bits × bit order × MSB/LSB packing.\n"
+                              "Choose several bits to test each of them alone and together.")
         self.manual = QPushButton("Manual settings")
         self.manual.setCheckable(True)
         self.manual.setToolTip("Show bit order, packing, inversion and length settings for a single extraction")
@@ -131,6 +137,7 @@ class ExtractTab(QWidget):
         self.combo_key = None
         self.combo_text = ""
         self._picked = None
+        self._applied = None
         lay.addWidget(p, 1)
 
         self.picker.changed.connect(self._bits_changed)
@@ -184,7 +191,11 @@ class ExtractTab(QWidget):
             f"{', inverted' if self.invert.isChecked() else ''}. ≈ {total:,} bytes"
             f"{f' (limited to {mb:,})' if mb and mb < total else ''}.")
         if self.combos:
-            stale = self._combo_key() != self.combo_key
+            # picking a row narrows the chips to that row's bits; that alone doesn't outdate the table
+            keys = {self._combo_key()}
+            if self._applied == frozenset(bits):
+                keys.add(self._combo_key(self.combo_key[5]))
+            stale = self.combo_key not in keys
             self.combo_info.setText(self.combo_text + (
                 f' <span style="color:{T["warn"]}">The sample range or bits changed since — '
                 f'press Try combinations again.</span>' if stale else ""))
@@ -247,14 +258,26 @@ class ExtractTab(QWidget):
     def _source_name(self, src):
         return "interleaved" if src == "interleaved" else channel_name(int(src[2:]), self.audio.channels)
 
-    def _combo_key(self):
+    def max_subset(self) -> int | None:
+        """Every selection of the chosen bits is tried, from one bit up to all of them."""
+        return len(set(self.bits())) or None
+
+    def combination_count(self) -> int:
+        return count_combinations(self.audio.channels, self.bits(), self.max_subset()) if self.audio else 0
+
+    @staticmethod
+    def _eta(n):
+        sec = n / COMBO_RATE
+        return f"{sec:.0f} seconds" if sec < 90 else f"{sec / 60:.0f} minutes"
+
+    def _combo_key(self, bits=None):
         """What a combination run depends on (everything except source, bit order and packing)."""
         s = self.m.sel
-        return (s.start, s.end, s.step, s.take, s.reverse, frozenset(self.bits()),
+        return (s.start, s.end, s.step, s.take, s.reverse, frozenset(self.bits() if bits is None else bits),
                 self.invert.isChecked(), self.max_bytes.value())
 
     def _clear_combos(self):
-        self.combos, self.combo_key, self._picked = [], None, None
+        self.combos, self.combo_key, self._picked, self._applied = [], None, None, None
         self.combo_table.blockSignals(True)
         self.combo_table.setRowCount(0)
         self.combo_table.blockSignals(False)
@@ -269,11 +292,25 @@ class ExtractTab(QWidget):
         except ValueError as e:
             self.summary.setText(badge(str(e), "bad"))
             return
+        n = self.combination_count()
+        if n > COMBO_MAX:
+            self.summary.setText(badge(f"{len(self.bits())} chosen bits give {n:,} combinations, which is too many "
+                                       f"(limit {COMBO_MAX:,}). Choose fewer bits.", "bad"))
+            return
+        if n > COMBO_WARN and not self.confirm_big(n):
+            return
         self.brute.setEnabled(False)
         self.brute.setText("Trying…")
-        self._pending_key = self._combo_key()
-        self.runner.submit("combos", try_combinations, self.audio, self.m.sel, opts,
-                           on_ok=self._got_combos, on_err=self._combos_err)
+        self._pending_key, self._pending_total = self._combo_key(), n
+        self.runner.submit("combos", try_combinations, self.audio, self.m.sel, opts, max_bits=self.max_subset(),
+                           keep=COMBO_KEEP, on_ok=self._got_combos, on_err=self._combos_err)
+
+    def confirm_big(self, n) -> bool:
+        return QMessageBox.question(
+            self, "Try combinations",
+            f"Every selection of the {len(self.bits())} chosen bits gives {n:,} combinations.\n"
+            f"That takes about {self._eta(n)} and cannot be cancelled.\n\nTry them all?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
     def _combos_err(self, e):
         self.brute.setEnabled(True)
@@ -310,8 +347,10 @@ class ExtractTab(QWidget):
         t.setCurrentCell(-1, -1)
         t.blockSignals(False)
         t.show()
+        total = self._pending_total
         self.combo_text = (
-            f"{len(rows)} combinations of source × bit order × packing, {rng}{pick}"
+            f"{total:,} combinations of source × {'bit selection × ' if len(self.combo_key[5]) > 1 else ''}bit order × "
+            f"packing{f' (the best {len(rows)} are listed)' if total > len(rows) else ''}, {rng}{pick}"
             f"{', reversed' if s.reverse else ''}{', inverted' if self.invert.isChecked() else ''}. "
             f"First {head} bytes shown; flags and file signatures are searched in the first "
             f"{max((r['bytes'] for r in rows), default=0):,} bytes. Best matches first. "
@@ -319,7 +358,7 @@ class ExtractTab(QWidget):
         self.combo_info.setTextFormat(Qt.RichText)
         self.combo_info.show()
         self._explain()
-        self.summary.setText(badge(f"{len(rows)} combinations tried") +
+        self.summary.setText(badge(f"{total:,} combinations tried") +
                              badge(f"{hits} with a flag or file signature" if hits else "no flag or file signature",
                                    "good" if hits else ""))
         best = next((r for r in rows if r["flags"]), None)
@@ -345,6 +384,7 @@ class ExtractTab(QWidget):
         self.pack.blockSignals(True)
         self.pack.setCurrentIndex(self.pack.findData(r["pack"]))
         self.pack.blockSignals(False)
+        self._applied = frozenset(r["bits"])
         self.picker.set_bits(r["bits"])
         self.m.update(source=r["source"])
         self.manual.setChecked(True)

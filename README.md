@@ -65,11 +65,15 @@ with one click).
 - Source: one channel, all channels interleaved (file order), or all channels sequentially.
 - Samples: start/end, then **keep `take` of every `step` samples**. Presets cover all,
   even and odd. Reverse is optional.
-- Bits: toggle the chips for the bits to read from each sample.
+- Bits: toggle the chips for the candidate bits to read from each sample.
 - **Try combinations** (Ctrl+Enter) is the starting point: it keeps the sample range and
-  the chosen bits, and previews the first bytes of every channel / all-interleaved × bit
-  order (high→low, low→high, as listed) × MSB/LSB packing combination. Rows with a flag
-  or a file signature are listed first.
+  previews the first bytes of every channel / all-interleaved × selection of the chosen
+  bits × bit order (high→low, low→high) × MSB/LSB packing combination. Choosing b2, b1
+  and b0 tests each bit alone, every pair and all three, so you don't need to know which
+  bits carry the data. Rows with a flag or a file signature are listed first, and the
+  best 300 are shown.
+- The number of combinations doubles with every extra chosen bit. Runs above 100,000
+  ask for confirmation with a time estimate, and runs above 3,000,000 are refused.
 - Click a combination to open its settings and run it in full, with the output shown
   under the table. The settings (also behind *Manual settings*) are bit order or a typed
   bit list emitted **in the listed order** (`1,0` vs `0,1`), MSB-first or LSB-first
