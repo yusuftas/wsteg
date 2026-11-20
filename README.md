@@ -1,8 +1,50 @@
-# wsteg: audio steganography workbench
-
 [![ci](https://github.com/yusuftas/wsteg/actions/workflows/ci.yml/badge.svg)](https://github.com/yusuftas/wsteg/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/yusuftas/wsteg)](https://github.com/yusuftas/wsteg/releases/latest)
 [![license](https://img.shields.io/github/license/yusuftas/wsteg)](LICENSE)
+
+# NOTES FROM A HUMAN
+
+In recent CTFs I have attended, I found myself asking why isn't there a zsteg like tool for audio steganography challenges? I have faced a couple of challenges where I needed to extract LSB bits and similar from wav files. And I couldn't find a reliable tool, I had to write a python script to iterate over samples to extract LSB bits. And AI, oh man that AI would do that quickly and effortlessly. I know it is no longer possible to win against AI in CTFs anymore, but I thought, why not make the life easier for human players? If there was a tool to easily extract bit fields, visualize spectrum, analyze bit combinations, wouldn't it be great? Then I decided to write **wsteg**, well correction: slop it. Why not use AI against AI, right? This tool offers functionailities I thought would be useful for wav steganography challenges:
+
+* Audio load and investigate metadata
+
+* Spectrum viewer with additional tools. No need to boot up Audacity just for spectrum anymore.
+
+* Bit analysis. If a bit plane contains hidden data, distribution of 1s and 0s is different than random distribution you would get in normal audio. Visualize bit fields to see which bits might contain hidden data.
+
+* Bit extraction. Extract and combine selected bits and see the results straight away.
+
+* Auto extraction: zsteg -a for wav files. 
+
+* Hide data for generating wav steganography challenges. 
+
+* UI and CLI
+
+* Windows and Linux prebuilt binaries. Windows binaries are not signed, don't freak out if smart screen annoys you. Or just build it yourself really. 
+
+Normally you can use bit analysis features to decide which bit fields to extract data from samples. And then bit extraction tab can be used to select and combine those bits into meaningful data. Or if you want to yolo, try this directly: `wsteg extract -a roll.wav` This assumes bits are stored in some order of lower 4 LSB bits - inspired by zsteg -a option:
+
+![Auto extraction](/img/auto_extract.png)
+
+We can see the chickens at the best result candidates at the top. That file was from a wav stegano challenge from PINK+ CTF: <https://pink.bayern/>. They got quite a few interesting steg. challenges if you are interested. 
+
+If you want to be more analytic and analyze bit planes to see where the data might be hidden, use bit plane viewer's different visualization tools:
+
+![Distribution](/img/dist_view.png)
+
+![Heat map](/img/heat_view.png)
+
+These plots are from the same file, and they both indicate unusual bit distribution in bit 1 and 2. This tells us most likely data is hidden in those two bits of each sample. Rest is figuring out how to combine them into data:
+
+![Extraction UI](/img/extraction_ui.png)
+
+This is if you can figure out the selection and ordering of bits. Some files might hide data in unusual ways, bit 0 and bit 2 for example. If the hidden data is compressed, heat distribution might not reveal where the data is hidden. So auto extraction might be able to find such unusual combinations. But in the end, this is not a tool to solve all wav challenges, especially when data is scarcely hidden across some bits that can't be easily figured out. In those cases, good luck, you are on your own!
+
+I am still planning to add more tools to this as I come across them in CTFs. Some decoders might be useful like morse, OOK and other signal tools maybe...
+
+Rest of the README and the code is written by Claude, enjoy... Or probably don't. I hate reading claude written documentation, so I put this section up for my fellow humans. 
+
+# wsteg: audio steganography workbench
 
 A cross-platform desktop app (Windows + Linux) for WAV/audio stego CTF challenges,
 built with Qt (PySide6) and pyqtgraph. It reads the **exact stored sample bits**,
